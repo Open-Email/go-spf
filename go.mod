@@ -1,4 +1,4 @@
-module github.com/migadu/spf
+module github.com/Open-Email/go-spf
 
 go 1.24.0
 

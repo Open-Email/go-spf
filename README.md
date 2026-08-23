@@ -7,7 +7,7 @@ Based on [mileusna/spf](https://github.com/mileusna/spf).
 ## Installation
 
 ```bash
-go get github.com/migadu/spf
+go get github.com/Open-Email/go-spf
 ```
 
 ## Usage
@@ -18,7 +18,7 @@ go get github.com/migadu/spf
 import (
     "context"
     "net"
-    "github.com/migadu/spf"
+    "github.com/Open-Email/go-spf"
 )
 
 ctx := context.Background()

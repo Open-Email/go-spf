@@ -32,7 +32,7 @@ Tests use a `mockResolver` (in `mock_resolver_test.go`) for all DNS fixtures —
 
 ## Architecture
 
-Flat single-package Go library (`github.com/migadu/spf`) implementing SPF (Sender Policy Framework) per RFC 7208.
+Flat single-package Go library (`github.com/Open-Email/go-spf`) implementing SPF (Sender Policy Framework) per RFC 7208.
 
 **Public API:**
 - `CheckHost(ctx, ip, domain, sender, helo)` → `Result` — main entry point

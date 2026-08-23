@@ -6,7 +6,7 @@ import (
 	"net"
 	"testing"
 
-	"github.com/migadu/spf"
+	"github.com/Open-Email/go-spf"
 )
 
 // ---------------------------------------------------------------------------
