@@ -252,7 +252,7 @@ func TestMXMechanism(t *testing.T) {
 			r: resolverFull(
 				map[string][]string{"mx.example": {"v=spf1 mx -all"}},
 				map[string][]string{"mx.example": {"mail.mx.example."}},
-				map[string][]string{"mail.mx.example.": {"20.20.20.20"}},
+				map[string][]string{"mail.mx.example": {"20.20.20.20"}},
 				nil, nil,
 			),
 		},
@@ -261,7 +261,7 @@ func TestMXMechanism(t *testing.T) {
 			r: resolverFull(
 				map[string][]string{"mx.example": {"v=spf1 mx -all"}},
 				map[string][]string{"mx.example": {"mail.mx.example."}},
-				map[string][]string{"mail.mx.example.": {"20.20.20.20"}},
+				map[string][]string{"mail.mx.example": {"20.20.20.20"}},
 				nil, nil,
 			),
 		},
@@ -270,7 +270,7 @@ func TestMXMechanism(t *testing.T) {
 			r: resolverFull(
 				map[string][]string{"mx.example": {"v=spf1 mx:relay.example -all"}},
 				map[string][]string{"relay.example": {"mail.relay.example."}},
-				map[string][]string{"mail.relay.example.": {"30.30.30.30"}},
+				map[string][]string{"mail.relay.example": {"30.30.30.30"}},
 				nil, nil,
 			),
 		},
@@ -279,7 +279,7 @@ func TestMXMechanism(t *testing.T) {
 			r: resolverFull(
 				map[string][]string{"mx.example": {"v=spf1 mx:mx.example/24 -all"}},
 				map[string][]string{"mx.example": {"mail.mx.example."}},
-				map[string][]string{"mail.mx.example.": {"40.40.40.1"}},
+				map[string][]string{"mail.mx.example": {"40.40.40.1"}},
 				nil, nil,
 			),
 		},

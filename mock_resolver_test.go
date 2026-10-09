@@ -86,7 +86,7 @@ func newMockResolver() *mockResolver {
 			"teicee.fr": {"mail.teicee.fr."},
 		},
 		a: map[string][]string{
-			"mail.teicee.fr.": {"1.2.3.4"},
+			"mail.teicee.fr": {"1.2.3.4"},
 		},
 		ptr: map[string][]string{
 			"223.204.237.87": {"unrelated.host.example."},

@@ -43,7 +43,7 @@ var errCNAMELoop = fmt.Errorf("CNAME chain exceeds maximum depth of %d", maxCNAM
 // If no records or more than one record is found, r is set to None or PermError respectively.
 // If the DNS lookup fails, r is TempError.
 func LookupSPF(ctx context.Context, domain string) (spf string, r Result) {
-	txts, err := DefaultResolver.LookupTXT(ctx, domain)
+	txts, err := (idnaResolver{DefaultResolver}).LookupTXT(ctx, domain)
 	if err != nil {
 		return "", TempError
 	}

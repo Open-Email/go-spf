@@ -86,7 +86,7 @@ func CheckHostWithExplanationAndResolver(ctx context.Context, ip net.IP, domain,
 	c := check{
 		ctx:      ctx,
 		cnt:      0,
-		resolver: r,
+		resolver: idnaResolver{r},
 		helo:     helo,
 	}
 
@@ -122,6 +122,14 @@ func (c *check) lookupSPF(domain string) (string, Result) {
 }
 
 func (c *check) checkHost(ip net.IP, domain, sender string) (Result, string) {
+	// RFC 7208 §4.3: a malformed <domain> makes check_host() return None.
+	// include/redirect targets never reach here malformed: domainSpec has
+	// already answered PermError for those.
+	var err error
+	domain, err = canonicalDNSName(domain)
+	if err != nil {
+		return None, ""
+	}
 	// Defence-in-depth: limit recursion depth independently of DNS counter
 	if c.depth >= maxRecursionDepth {
 		return PermError, ""
@@ -172,7 +180,10 @@ func (c *check) checkHost(ip net.IP, domain, sender string) (Result, string) {
 					return PermError, ""
 				}
 				c.cnt++
-				dom := d.domain(domain)
+				dom, result := c.domainSpec(d.domain(domain), ip, domain, sender)
+				if result != None {
+					return result, ""
+				}
 				r = c.check(ip, dom, d.cidr(), d.qualifier)
 
 			case "mx":
@@ -180,7 +191,10 @@ func (c *check) checkHost(ip net.IP, domain, sender string) (Result, string) {
 					return PermError, ""
 				}
 				c.cnt++
-				dom := d.domain(domain)
+				dom, result := c.domainSpec(d.domain(domain), ip, domain, sender)
+				if result != None {
+					return result, ""
+				}
 				r = c.checkMX(ip, dom, d.cidr(), d.qualifier)
 
 			case "include":
@@ -188,7 +202,10 @@ func (c *check) checkHost(ip net.IP, domain, sender string) (Result, string) {
 					return PermError, ""
 				}
 				c.cnt++
-				dom := d.domain(domain)
+				dom, result := c.domainSpec(d.domain(domain), ip, domain, sender)
+				if result != None {
+					return result, ""
+				}
 				res, _ := c.checkHost(ip, dom, sender)
 				switch res {
 				case Pass:
@@ -209,7 +226,10 @@ func (c *check) checkHost(ip net.IP, domain, sender string) (Result, string) {
 					return PermError, ""
 				}
 				c.cnt++
-				dom := d.domain(domain)
+				dom, result := c.domainSpec(d.domain(domain), ip, domain, sender)
+				if result != None {
+					return result, ""
+				}
 				r = c.checkPTR(ip, dom, d.qualifier)
 
 			case "ip4":
@@ -234,7 +254,7 @@ func (c *check) checkHost(ip net.IP, domain, sender string) (Result, string) {
 					return PermError, ""
 				}
 				c.cnt++
-				dom, res := c.macro(d.param, ip, domain, sender, c.helo)
+				dom, res := c.domainSpec(d.param, ip, domain, sender)
 				if res == PermError {
 					return PermError, ""
 				}
@@ -279,7 +299,11 @@ func (c *check) checkHost(ip net.IP, domain, sender string) (Result, string) {
 		c.cnt++
 		// RFC 7208 §6.1: the result of the redirect modifier is the result of
 		// the SPF check for the target domain.
-		res, _ := c.checkHost(ip, redirect, sender)
+		target, result := c.domainSpec(redirect, ip, domain, sender)
+		if result != None {
+			return result, ""
+		}
+		res, _ := c.checkHost(ip, target, sender)
 		// RFC 7208 §6.2: if the result is Fail, process exp= from this policy.
 		if res == Fail {
 			return res, c.processExplanation(explanation, ip, domain, sender)
@@ -295,7 +319,7 @@ func (c *check) processExplanation(exp string, ip net.IP, domain, sender string)
 		return ""
 	}
 	// Expand exp macro
-	target, res := c.macro(exp, ip, domain, sender, c.helo)
+	target, res := c.domainSpec(exp, ip, domain, sender)
 	if res != None {
 		return ""
 	}
