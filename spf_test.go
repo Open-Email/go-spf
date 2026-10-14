@@ -321,6 +321,20 @@ func TestPTRMechanism(t *testing.T) {
 				map[string][]string{},
 			),
 		},
+		{
+			name: "ptr DNS error fails to match and continues", ip: "1.2.3.4", domain: "ptr.example", sender: "u@ptr.example", want: spf.Pass,
+			r: &mockResolver{
+				txt:    map[string][]string{"ptr.example": {"v=spf1 ptr ip4:1.2.3.4 -all"}},
+				ptrErr: newDNSError("SERVFAIL"),
+			},
+		},
+		{
+			name: "ptr DNS error falls through to -all", ip: "1.2.3.4", domain: "ptr.example", sender: "u@ptr.example", want: spf.Fail,
+			r: &mockResolver{
+				txt:    map[string][]string{"ptr.example": {"v=spf1 ptr -all"}},
+				ptrErr: newDNSError("SERVFAIL"),
+			},
+		},
 	}
 	runCases(t, cases)
 }
@@ -410,6 +424,19 @@ func TestRedirectModifier(t *testing.T) {
 			r: resolverWith(map[string][]string{
 				"domain.com": {"v=spf1 redirect=other.com +all"},
 				"other.com":  {"v=spf1 -all"},
+			}),
+		},
+		{
+			name: "redirect none permerror", ip: "1.2.3.4", domain: "redir.example", sender: "u@redir.example", want: spf.PermError,
+			r: resolverWith(map[string][]string{
+				"redir.example": {"v=spf1 redirect=missing.example"},
+			}),
+		},
+		{
+			name: "redirect non-spf txt permerror", ip: "1.2.3.4", domain: "redir.example", sender: "u@redir.example", want: spf.PermError,
+			r: resolverWith(map[string][]string{
+				"redir.example":  {"v=spf1 redirect=target.example"},
+				"target.example": {"not-an-spf-record"},
 			}),
 		},
 	}
@@ -621,17 +648,39 @@ func TestDeepRedirectChain(t *testing.T) {
 }
 
 func TestVoidLookupLimit(t *testing.T) {
-	r := resolverWith(map[string][]string{
-		"v0.example": {"v=spf1 redirect=v1.example"},
-		"v1.example": {"not-an-spf-record"},
-		"v2.example": {"also-not-spf"},
-		"v3.example": {"v=spf1 ip4:1.2.3.4 -all"},
-	})
-	ip := net.ParseIP("1.2.3.4")
-	got := spf.CheckHostWithResolver(ctx, ip, "v0.example", "u@v0.example", "", r)
-	if got != spf.None {
-		t.Errorf("void lookup (single): want None, got %s", got)
+	cases := []testCase{
+		{
+			name: "two void lookups allowed", ip: "1.2.3.4", domain: "v.example", sender: "u@v.example", want: spf.Pass,
+			r: resolverWith(map[string][]string{
+				"v.example": {"v=spf1 a:n1.example mx:n2.example ip4:1.2.3.4 -all"},
+			}),
+		},
+		{
+			name: "three void a lookups permerror", ip: "1.2.3.4", domain: "v.example", sender: "u@v.example", want: spf.PermError,
+			r: resolverWith(map[string][]string{
+				"v.example": {"v=spf1 a:n1.example a:n2.example a:n3.example ip4:1.2.3.4 -all"},
+			}),
+		},
+		{
+			name: "three void mx lookups permerror", ip: "1.2.3.4", domain: "v.example", sender: "u@v.example", want: spf.PermError,
+			r: resolverWith(map[string][]string{
+				"v.example": {"v=spf1 mx:n1.example mx:n2.example mx:n3.example ip4:1.2.3.4 -all"},
+			}),
+		},
+		{
+			name: "mixed void a and mx lookups exceeding limit permerror", ip: "1.2.3.4", domain: "v.example", sender: "u@v.example", want: spf.PermError,
+			r: resolverWith(map[string][]string{
+				"v.example": {"v=spf1 a:n1.example a:n2.example a:n3.example mx:n4.example ip4:1.2.3.4 -all"},
+			}),
+		},
+		{
+			name: "void ipv6 aaaa lookups exceeding limit permerror", ip: "2001:db8::1", domain: "v.example", sender: "u@v.example", want: spf.PermError,
+			r: resolverWith(map[string][]string{
+				"v.example": {"v=spf1 a:n1.example a:n2.example a:n3.example ip6:2001:db8::1 -all"},
+			}),
+		},
 	}
+	runCases(t, cases)
 }
 
 func TestLargeNumberOfMechanisms(t *testing.T) {
