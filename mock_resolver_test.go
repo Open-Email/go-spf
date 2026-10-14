@@ -15,6 +15,7 @@ type mockResolver struct {
 	ptr        map[string][]string
 	err        error           // when non-nil, all lookups return this error
 	errDomains map[string]bool // when set, lookups for this domain return error
+	ptrErr     error           // when non-nil, LookupPTR returns this error
 }
 
 func (m *mockResolver) LookupTXT(_ context.Context, domain string) ([]string, error) {
@@ -63,6 +64,9 @@ func (m *mockResolver) LookupAAAA(_ context.Context, domain string) ([]net.IP, e
 func (m *mockResolver) LookupPTR(_ context.Context, ip net.IP) ([]string, error) {
 	if m.err != nil {
 		return nil, m.err
+	}
+	if m.ptrErr != nil {
+		return nil, m.ptrErr
 	}
 	return m.ptr[ip.String()], nil
 }

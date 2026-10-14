@@ -2,18 +2,22 @@ package spf
 
 import (
 	"context"
+	"errors"
 	"net"
 	"testing"
+
+	"github.com/miekg/dns"
 )
 
 // internalMockResolver is a minimal Resolver used by white-box tests in this
 // file. It does not make real network calls.
 type internalMockResolver struct {
-	txt  map[string][]string
-	mx   map[string][]string
-	a    map[string][]string
-	aaaa map[string][]string
-	ptr  map[string][]string
+	txt    map[string][]string
+	mx     map[string][]string
+	a      map[string][]string
+	aaaa   map[string][]string
+	ptr    map[string][]string
+	ptrErr error
 }
 
 func (m *internalMockResolver) LookupTXT(_ context.Context, domain string) ([]string, error) {
@@ -41,6 +45,9 @@ func (m *internalMockResolver) LookupAAAA(_ context.Context, domain string) ([]n
 	return ips, nil
 }
 func (m *internalMockResolver) LookupPTR(_ context.Context, ip net.IP) ([]string, error) {
+	if m.ptrErr != nil {
+		return nil, m.ptrErr
+	}
 	return m.ptr[ip.String()], nil
 }
 
@@ -94,6 +101,50 @@ func TestPTR(t *testing.T) {
 			t.Errorf("checkPTR IPv6: got %s, want %s", got, Pass)
 		}
 	})
+
+	t.Run("DNS error on LookupPTR returns internalNoMatch", func(t *testing.T) {
+		mock := &internalMockResolver{
+			ptrErr: errors.New("SERVFAIL"),
+		}
+		c := check{ctx: ctx, cnt: 0, resolver: mock}
+		ip := net.ParseIP("1.2.3.4")
+		if got := c.checkPTR(ip, "example.com", ""); got != internalNoMatch {
+			t.Errorf("checkPTR DNS error: got %s, want %s", got, internalNoMatch)
+		}
+	})
+}
+
+func TestDNSQueryRcode(t *testing.T) {
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("ListenPacket: %v", err)
+	}
+	srv := &dns.Server{
+		PacketConn: pc,
+		Handler: dns.HandlerFunc(func(w dns.ResponseWriter, req *dns.Msg) {
+			resp := new(dns.Msg)
+			resp.SetReply(req)
+			if len(req.Question) > 0 && req.Question[0].Name == "servfail.example." {
+				resp.Rcode = dns.RcodeServerFailure
+			} else {
+				resp.Rcode = dns.RcodeNameError
+			}
+			_ = w.WriteMsg(resp)
+		}),
+	}
+	go func() { _ = srv.ActivateAndServe() }()
+	defer func() { _ = srv.Shutdown() }()
+
+	origServer := DNSServer
+	DNSServer = pc.LocalAddr().String()
+	defer func() { DNSServer = origServer }()
+
+	if _, err := dnsQuery(context.Background(), "servfail.example.", dns.TypeTXT); err == nil {
+		t.Errorf("dnsQuery on SERVFAIL: want error, got nil")
+	}
+	if _, err := dnsQuery(context.Background(), "nxdomain.example.", dns.TypeTXT); err != nil {
+		t.Errorf("dnsQuery on NXDOMAIN: want nil error, got %v", err)
+	}
 }
 
 // Macro exports macro for testing
