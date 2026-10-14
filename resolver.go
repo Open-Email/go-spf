@@ -226,5 +226,10 @@ func dnsQuery(ctx context.Context, d string, t uint16) (r *dns.Msg, err error) {
 		}
 	}
 
+	// RFC 7208 §5: RCODE other than 0 (NOERROR) or 3 (NXDOMAIN) is a DNS error.
+	if r.Rcode != dns.RcodeSuccess && r.Rcode != dns.RcodeNameError {
+		return nil, fmt.Errorf("DNS query failed with rcode %s (%d)", dns.RcodeToString[r.Rcode], r.Rcode)
+	}
+
 	return r, nil
 }

@@ -304,6 +304,10 @@ func (c *check) checkHost(ip net.IP, domain, sender string) (Result, string) {
 			return result, ""
 		}
 		res, _ := c.checkHost(ip, target, sender)
+		// RFC 7208 §6.1: if no SPF record is found, the result is PermError rather than None.
+		if res == None {
+			return PermError, ""
+		}
 		// RFC 7208 §6.2: if the result is Fail, process exp= from this policy.
 		if res == Fail {
 			return res, c.processExplanation(explanation, ip, domain, sender)
@@ -355,6 +359,15 @@ func (c *check) check(ip net.IP, domain, cidr, qualifier string) Result {
 		return TempError
 	}
 
+	if len(ips) == 0 {
+		// RFC 7208 §4.6.4: count void lookups (empty response)
+		c.voidCnt++
+		if c.voidCnt > maxVoidLookups {
+			return PermError
+		}
+		return internalNoMatch
+	}
+
 	for _, a := range ips {
 		if r := checkIP(ip, a.String()+cidr, qualifier); r != internalNoMatch {
 			return r
@@ -400,6 +413,15 @@ func (c *check) checkMX(ip net.IP, domain, cidr, qualifier string) Result {
 		return TempError
 	}
 
+	if len(mxs) == 0 {
+		// RFC 7208 §4.6.4: count void lookups (empty response)
+		c.voidCnt++
+		if c.voidCnt > maxVoidLookups {
+			return PermError
+		}
+		return internalNoMatch
+	}
+
 	// Cap the number of MX records we process (RFC 7208 §4.6.4)
 	if len(mxs) > maxMXPTRRecords {
 		return PermError
@@ -423,7 +445,8 @@ func (c *check) checkMX(ip net.IP, domain, cidr, qualifier string) Result {
 func (c *check) checkPTR(ip net.IP, domain, qualifier string) Result {
 	hosts, err := c.resolver.LookupPTR(c.ctx, ip)
 	if err != nil {
-		return TempError
+		// RFC 7208 §5.5: if a DNS error occurs during the PTR lookup, the mechanism fails to match.
+		return internalNoMatch
 	}
 
 	// Cap the number of PTR records we process (RFC 7208 §4.6.4)
