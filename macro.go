@@ -176,10 +176,13 @@ func (m *macro) getValidatedDomain() string {
 	return "unknown"
 }
 
+// senderParts splits the sender into the local part (%{l}) and domain (%{o}).
+// The domain follows the LAST '@': a quoted local part may hold one
+// (RFC 5321 §4.1.2), a domain never does.
 func senderParts(s string) (string, string) {
-	parts := strings.SplitN(s, "@", 2)
-	if len(parts) < 2 {
-		return parts[0], ""
+	i := strings.LastIndex(s, "@")
+	if i < 0 {
+		return s, ""
 	}
-	return parts[0], parts[1]
+	return s[:i], s[i+1:]
 }
