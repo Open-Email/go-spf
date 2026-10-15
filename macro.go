@@ -43,6 +43,18 @@ func (c check) macro(m string, ip net.IP, domain, sender, helo string) (string, 
 	return macroMatch.ReplaceAllStringFunc(m, mac.eval), None
 }
 
+// recordName is spec with each macro standing for one valid label, which is
+// what the record's own text spells once the sender's data is taken out. A
+// letter eval does not expand stands for nothing, as it does in eval.
+func recordName(spec string) string {
+	return macroMatch.ReplaceAllStringFunc(macroReplacer.Replace(spec), func(s string) string {
+		if strings.IndexByte("slodipvh", s[2]) < 0 {
+			return ""
+		}
+		return "x"
+	})
+}
+
 func (m *macro) eval(s string) string {
 	// s is something like "%{s}" or "%{l1r-}"
 	// strip %{ and }

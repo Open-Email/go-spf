@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"strings"
 	"testing"
 
 	"github.com/Open-Email/go-spf"
@@ -1063,6 +1064,171 @@ func TestSenderLocalPartWithAt(t *testing.T) {
 				t.Errorf("explanation: got %q, want %q", exp, want)
 			}
 		})
+	}
+}
+
+// unqueryableSenders hold local parts that are legal in an address (atext,
+// RFC 5322 §3.2.3; up to 64 octets, RFC 5321 §4.5.3.1.1) but that no DNS
+// query can carry once %{l} puts them in a label: IDNA's Lookup profile
+// refuses the plus sign, the apostrophe and the exclamation mark, and a label
+// is at most 63 octets.
+var unqueryableSenders = []string{
+	"user+tag@example.com",
+	"o'brien@example.com",
+	"a!b@example.com",
+	strings.Repeat("a", 64) + "@example.com",
+}
+
+// TestUnqueryableExpandedName: a macro-expanded target name that cannot be
+// queried names nothing, so the mechanism does not match and evaluation goes
+// on, as for a name that does not exist (Open-Email/smtp-in#129). One
+// sender's local part must not turn the whole record into a PermError.
+func TestUnqueryableExpandedName(t *testing.T) {
+	const client = "192.0.2.3"
+	policy := func(record string) *mockResolver {
+		return resolverFull(
+			map[string][]string{"example.com": {record}},
+			nil,
+			map[string][]string{"user._spf.example.com": {"127.0.0.2"}},
+			nil, nil,
+		)
+	}
+	var cases []testCase
+	for _, sender := range unqueryableSenders {
+		for _, tc := range []struct {
+			record string
+			want   spf.Result
+		}{
+			{"v=spf1 exists:%{l}._spf.example.com -all", spf.Fail},
+			{"v=spf1 exists:%{l}._spf.example.com ?all", spf.Neutral},
+			{"v=spf1 exists:%{l}._spf.example.com ip4:" + client + " -all", spf.Pass},
+			{"v=spf1 a:%{l}.example.com -all", spf.Fail},
+			{"v=spf1 mx:%{l}.example.com -all", spf.Fail},
+			{"v=spf1 ptr:%{l}.example.com -all", spf.Fail},
+		} {
+			cases = append(cases, testCase{
+				name: sender + " " + tc.record, ip: client, domain: "example.com", sender: sender,
+				want: tc.want, r: policy(tc.record),
+			})
+		}
+	}
+	runCases(t, cases)
+}
+
+// TestUnqueryableExpandedNameGuards pins what the change must leave alone:
+// a queryable %{l} still matches, a record that splits the local part on '+'
+// (RFC 7208 §7.4's %{l1r+-}) still works, and include/redirect to an
+// unqueryable target behave as include/redirect to a name with no SPF record
+// (RFC 7208 §5.2, §6.1: PermError).
+func TestUnqueryableExpandedNameGuards(t *testing.T) {
+	const client = "192.0.2.3"
+	a := map[string][]string{"user._spf.example.com": {"127.0.0.2"}}
+	txt := func(record string) map[string][]string {
+		return map[string][]string{
+			"example.com":           {record},
+			"user._spf.example.com": {"v=spf1 ip4:" + client + " -all"},
+		}
+	}
+	runCases(t, []testCase{
+		{
+			name: "plain local part still matches exists", ip: client, domain: "example.com", sender: "user@example.com", want: spf.Pass,
+			r: resolverFull(txt("v=spf1 exists:%{l}._spf.example.com -all"), nil, a, nil, nil),
+		},
+		{
+			name: "plus split by the record still matches", ip: client, domain: "example.com", sender: "user+tag@example.com", want: spf.Pass,
+			r: resolverFull(txt("v=spf1 exists:%{l1r+-}._spf.example.com -all"), nil, a, nil, nil),
+		},
+		{
+			name: "plain local part still matches include", ip: client, domain: "example.com", sender: "user@example.com", want: spf.Pass,
+			r: resolverFull(txt("v=spf1 include:%{l}._spf.example.com -all"), nil, nil, nil, nil),
+		},
+		{
+			name: "include to a name with no SPF record", ip: client, domain: "example.com", sender: "nobody@example.com", want: spf.PermError,
+			r: resolverFull(txt("v=spf1 include:%{l}._spf.example.com -all"), nil, nil, nil, nil),
+		},
+		{
+			name: "include to an unqueryable name", ip: client, domain: "example.com", sender: "user+tag@example.com", want: spf.PermError,
+			r: resolverFull(txt("v=spf1 include:%{l}._spf.example.com -all"), nil, nil, nil, nil),
+		},
+		{
+			name: "redirect to a name with no SPF record", ip: client, domain: "example.com", sender: "nobody@example.com", want: spf.PermError,
+			r: resolverFull(txt("v=spf1 redirect=%{l}._spf.example.com"), nil, nil, nil, nil),
+		},
+		{
+			name: "redirect to an unqueryable name", ip: client, domain: "example.com", sender: "user+tag@example.com", want: spf.PermError,
+			r: resolverFull(txt("v=spf1 redirect=%{l}._spf.example.com"), nil, nil, nil, nil),
+		},
+	})
+}
+
+// TestUnqueryableExpandedNameLimits: an unqueryable name still costs what an
+// NXDOMAIN costs (RFC 7208 §4.6.4): one DNS-querying term and one void lookup.
+func TestUnqueryableExpandedNameLimits(t *testing.T) {
+	const client = "192.0.2.3"
+	const sender = "user+tag@example.com"
+	// Nine a: terms whose names exist but do not cover the client, then one
+	// that does: the eleventh DNS term when an exists: before them counts.
+	hosts := map[string][]string{"h10.example.com": {client}}
+	terms := ""
+	for i := 1; i <= 9; i++ {
+		hosts[fmt.Sprintf("h%d.example.com", i)] = []string{"198.51.100.1"}
+		terms += fmt.Sprintf(" a:h%d.example.com", i)
+	}
+	terms += " a:h10.example.com"
+	runCases(t, []testCase{
+		{
+			name: "two void lookups allowed", ip: client, domain: "example.com", sender: sender, want: spf.Pass,
+			r: resolverWith(map[string][]string{
+				"example.com": {"v=spf1 exists:%{l}.one.example.com exists:%{l}.two.example.com ip4:" + client + " -all"},
+			}),
+		},
+		{
+			name: "three void lookups permerror", ip: client, domain: "example.com", sender: sender, want: spf.PermError,
+			r: resolverWith(map[string][]string{
+				"example.com": {"v=spf1 exists:%{l}.one.example.com exists:%{l}.two.example.com exists:%{l}.three.example.com ip4:" + client + " -all"},
+			}),
+		},
+		{
+			name: "ten DNS terms pass", ip: client, domain: "example.com", sender: sender, want: spf.Pass,
+			r: resolverFull(map[string][]string{"example.com": {"v=spf1" + terms + " -all"}}, nil, hosts, nil, nil),
+		},
+		{
+			name: "the unqueryable exists makes the last a: the eleventh DNS term", ip: client, domain: "example.com", sender: sender, want: spf.PermError,
+			r: resolverFull(map[string][]string{"example.com": {"v=spf1 exists:%{l}._spf.example.com" + terms + " -all"}}, nil, hosts, nil, nil),
+		},
+	})
+}
+
+// TestMalformedRecordNameStaysPermError: a name the RECORD spells wrong is
+// the publisher's error, not the sender's, and stays a PermError (RFC 7208
+// §4.6), also when a macro sits beside the malformed text. An unknown macro
+// letter (a syntax error, RFC 7208 §7.1) expands to nothing here, so the
+// empty label it leaves is the record's own too.
+func TestMalformedRecordNameStaysPermError(t *testing.T) {
+	for _, record := range []string{
+		"v=spf1 exists:bad+label.example.com -all",
+		"v=spf1 exists:bad+label.%{d} -all",
+		"v=spf1 a:bad+label.example.com -all",
+		"v=spf1 include:bad+label.example.com -all",
+		"v=spf1 redirect=bad+label.%{d}",
+		"v=spf1 exists:%{z}.example.com -all",
+	} {
+		r := resolverWith(map[string][]string{"example.com": {record}})
+		if got := spf.CheckHostWithResolver(ctx, net.ParseIP("192.0.2.3"), "example.com", "user@example.com", "", r); got != spf.PermError {
+			t.Errorf("%s: got %s, want %s", record, got, spf.PermError)
+		}
+	}
+}
+
+// TestLookupSPFUnqueryableName: a name no DNS query can carry has no SPF
+// record (RFC 7208 §4.3: a malformed domain is None). Retrying cannot help,
+// so it is not a TempError.
+func TestLookupSPFUnqueryableName(t *testing.T) {
+	orig := spf.DefaultResolver
+	defer func() { spf.DefaultResolver = orig }()
+	spf.DefaultResolver = resolverWith(map[string][]string{})
+	if _, got := spf.LookupSPF(ctx, "user+tag.example.com"); got != spf.None {
+		t.Errorf("got %s, want %s", got, spf.None)
 	}
 }
 
