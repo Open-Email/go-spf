@@ -130,6 +130,8 @@ Enforced limits per RFC §4.6.4:
 
 Additional features:
 - Case-insensitive mechanism and modifier parsing
+- Terms parsed by the RFC 7208 §4.6.1 grammar: a mechanism name matches the whole name; an unknown mechanism or malformed term (`foo:bar`, `-all.`, `a:`, `a/33`) is a PermError anywhere in the record, while unknown modifiers are ignored
+- `a` and `mx` take a dual-cidr-length with or without a domain (`a/24`, `mx//64`, `a:example.com/24//64`): the IPv4 length for IPv4 clients, the IPv6 length for IPv6 clients
 - Duplicate `redirect=` or `exp=` modifier detection (→ PermError)
 - IPv6 PTR validation uses AAAA records (not A)
 - DNS errors on `exists` mechanism correctly return TempError

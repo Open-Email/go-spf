@@ -5,7 +5,7 @@ package spf
 import (
 	"context"
 	"net"
-	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -22,11 +22,6 @@ const (
 	TempError       = Result("TEMPERROR")
 	PermError       = Result("PERMERROR")
 	internalNoMatch = Result("internalNoMatch")
-)
-
-var (
-	mDirective = regexp.MustCompile(`(?i)^(\+|\-|\?|\~)?(all|include|a|mx|ptr|ip4|ip6|exists):?(.*)$`)
-	mModifier  = regexp.MustCompile(`(?i)^([a-z0-9\-\_\.]+)=(.*)$`)
 )
 
 // String representation of Result type
@@ -173,10 +168,14 @@ func (c *check) checkHost(ip net.IP, domain, sender string) (Result, string) {
 
 	// RFC 7208 §4.6: "If there are any syntax errors anywhere in the
 	// record, check_host() returns immediately with the result
-	// "permerror", without further interpretation." That includes the
-	// macros of every domain-spec (§7.1): of a term evaluation would not
-	// reach, and of exp=, which is only read on a Fail.
+	// "permerror", without further interpretation." That includes a term
+	// that is neither a directive nor a modifier (an unknown mechanism,
+	// §4.6.1), and the macros of every domain-spec (§7.1): of a term
+	// evaluation would not reach, and of exp=, which is only read on a Fail.
 	for _, term := range terms {
+		if _, ok := term.(invalidTerm); ok {
+			return PermError, ""
+		}
 		if spec, ok := domainSpecOf(term); ok && !validDomainSpec(spec) {
 			return PermError, ""
 		}
@@ -197,7 +196,7 @@ func (c *check) checkHost(ip net.IP, domain, sender string) (Result, string) {
 				if result != None {
 					return result, ""
 				}
-				r = c.check(ip, dom, d.cidr(), d.qualifier)
+				r = c.check(ip, dom, d.cidr4, d.cidr6, d.qualifier)
 
 			case "mx":
 				if c.cnt >= maxDNSMechanisms {
@@ -208,7 +207,7 @@ func (c *check) checkHost(ip net.IP, domain, sender string) (Result, string) {
 				if result != None {
 					return result, ""
 				}
-				r = c.checkMX(ip, dom, d.cidr(), d.qualifier)
+				r = c.checkMX(ip, dom, d.cidr4, d.cidr6, d.qualifier)
 
 			case "include":
 				if c.cnt >= maxDNSMechanisms {
@@ -267,7 +266,7 @@ func (c *check) checkHost(ip net.IP, domain, sender string) (Result, string) {
 					return PermError, ""
 				}
 				c.cnt++
-				dom, res := c.domainSpec(d.param, ip, domain, sender)
+				dom, res := c.domainSpec(d.domainSpec, ip, domain, sender)
 				if res == PermError {
 					return PermError, ""
 				}
@@ -358,7 +357,9 @@ func (c *check) processExplanation(exp string, ip net.IP, domain, sender string)
 	return expanded
 }
 
-func (c *check) check(ip net.IP, domain, cidr, qualifier string) Result {
+// check matches ip against the addresses of domain: A records and the ip4
+// prefix length for an IPv4 client, AAAA records and the ip6 one for IPv6.
+func (c *check) check(ip net.IP, domain string, cidr4, cidr6 int, qualifier string) Result {
 	var ips []net.IP
 	var err error
 
@@ -382,11 +383,30 @@ func (c *check) check(ip net.IP, domain, cidr, qualifier string) Result {
 	}
 
 	for _, a := range ips {
-		if r := checkIP(ip, a.String()+cidr, qualifier); r != internalNoMatch {
-			return r
+		if prefixMatch(ip, a, cidr4, cidr6) {
+			return evalQualifier(qualifier)
 		}
 	}
 	return internalNoMatch
+}
+
+// prefixMatch reports whether ip and addr agree in their first cidr4 bits
+// (IPv4 client) or cidr6 bits (IPv6 client).
+func prefixMatch(ip, addr net.IP, cidr4, cidr6 int) bool {
+	if v4 := ip.To4(); v4 != nil {
+		a4 := addr.To4()
+		if a4 == nil {
+			return false
+		}
+		mask := net.CIDRMask(cidr4, 32)
+		return v4.Mask(mask).Equal(a4.Mask(mask))
+	}
+	a16 := addr.To16()
+	if a16 == nil {
+		return false
+	}
+	mask := net.CIDRMask(cidr6, 128)
+	return ip.To16().Mask(mask).Equal(a16.Mask(mask))
 }
 
 func checkIP(ip net.IP, ipstr, qualifier string) Result {
@@ -420,7 +440,7 @@ func evalQualifier(q string) Result {
 
 // checkMX checks the MX records of domain for IP match.
 // RFC 7208 §4.6.4: limit to maxMXPTRRecords MX names to prevent amplification.
-func (c *check) checkMX(ip net.IP, domain, cidr, qualifier string) Result {
+func (c *check) checkMX(ip net.IP, domain string, cidr4, cidr6 int, qualifier string) Result {
 	mxs, err := c.resolver.LookupMX(c.ctx, domain)
 	if err != nil {
 		return TempError
@@ -441,7 +461,7 @@ func (c *check) checkMX(ip net.IP, domain, cidr, qualifier string) Result {
 	}
 
 	for _, mx := range mxs {
-		r := c.check(ip, mx, cidr, qualifier)
+		r := c.check(ip, mx, cidr4, cidr6, qualifier)
 		switch r {
 		case Pass, PermError, Fail, Softfail, Neutral:
 			return r
@@ -501,16 +521,29 @@ type modifier struct {
 type directive struct {
 	qualifier string
 	mechanism string
-	param     string
+	// param is the ip4 or ip6 network, as written.
+	param string
+	// domainSpec is the target of a, mx, ptr, include or exists; "" when
+	// the term names none (a, mx and ptr then use the current domain).
+	domainSpec string
+	// cidr4 and cidr6 are the dual-cidr-length of a and mx: 32 and 128
+	// when not given.
+	cidr4, cidr6 int
 }
 
-// domain returns default domain (param) or domain specified in spf record after : sign
-func (d directive) domain(domain string) string {
-	if d.param != "" {
-		parts := strings.SplitN(d.param, "/", 2)
-		return parts[0]
+// invalidTerm is a term that is neither a directive nor a modifier: a
+// syntax error, which makes the whole record a PermError (RFC 7208 §4.6).
+type invalidTerm struct {
+	text string
+}
+
+// domain returns the domain-spec of the term, or the current domain when it
+// names none.
+func (d directive) domain(current string) string {
+	if d.domainSpec != "" {
+		return d.domainSpec
 	}
-	return domain
+	return current
 }
 
 // domainSpecOf returns the domain-spec a term carries: the target of a:,
@@ -519,10 +552,8 @@ func domainSpecOf(term interface{}) (string, bool) {
 	switch t := term.(type) {
 	case directive:
 		switch t.mechanism {
-		case "a", "mx", "ptr", "include":
-			return t.domain(""), true
-		case "exists":
-			return t.param, true
+		case "a", "mx", "ptr", "include", "exists":
+			return t.domainSpec, true
 		}
 	case modifier:
 		if t.name == "redirect" || t.name == "exp" {
@@ -532,43 +563,138 @@ func domainSpecOf(term interface{}) (string, bool) {
 	return "", false
 }
 
-func (d directive) cidr() string {
-	n := strings.Index(d.param, "/")
-	if n != -1 {
-		return d.param[n:]
-	}
-	return ""
-}
-
-// parseSPF record and return slice with directives and modifiers.
-// Mechanism names are normalized to lowercase; parameter values are preserved.
+// parseSPF splits a record into its terms (RFC 7208 §4.6.1): directives,
+// modifiers, and an invalidTerm for each term that is neither.
+// Mechanism and modifier names are normalized to lowercase; parameter
+// values are preserved.
 func parseSPF(spf string) []interface{} {
 	// Strip v=spf1 prefix case-insensitively
 	if hasPrefixFold(spf, "v=spf1") {
 		spf = spf[6:]
 	}
-	spf = strings.TrimSpace(spf)
 
 	var terms []any
-	parts := strings.FieldsSeq(spf)
-	for t := range parts {
-		dirMatch := mDirective.FindStringSubmatch(t)
-		if len(dirMatch) > 0 {
-			terms = append(terms, directive{
-				qualifier: dirMatch[1],
-				mechanism: strings.ToLower(dirMatch[2]),
-				param:     dirMatch[3],
-			})
-			continue
-		} else {
-			modMatch := mModifier.FindStringSubmatch(t)
-			if len(modMatch) > 0 {
-				terms = append(terms, modifier{
-					name:  strings.ToLower(modMatch[1]),
-					value: modMatch[2],
-				})
-			}
-		}
+	for t := range strings.FieldsSeq(spf) {
+		terms = append(terms, parseTerm(t))
 	}
 	return terms
+}
+
+// parseTerm parses one term. "Modifiers always contain an equals ('=')
+// character immediately after the name, and before any ":" or "/"
+// characters that might be part of the macro-string" (§4.6.1); anything
+// else is a directive, whose mechanism name is all of the text up to the
+// first ':' or '/', and must be one of the eight of §5.
+func parseTerm(t string) interface{} {
+	if i := strings.IndexAny(t, ":/="); i >= 0 && t[i] == '=' {
+		if !validModifierName(t[:i]) {
+			return invalidTerm{t}
+		}
+		return modifier{name: strings.ToLower(t[:i]), value: t[i+1:]}
+	}
+
+	d := directive{cidr4: 32, cidr6: 128}
+	rest := t
+	if rest != "" && strings.IndexByte("+-?~", rest[0]) >= 0 {
+		d.qualifier, rest = rest[:1], rest[1:]
+	}
+	end := strings.IndexAny(rest, ":/")
+	if end < 0 {
+		end = len(rest)
+	}
+	d.mechanism, rest = strings.ToLower(rest[:end]), rest[end:]
+
+	var ok bool
+	switch d.mechanism {
+	case "all":
+		ok = rest == ""
+	case "include", "exists":
+		// "include" ":" domain-spec, "exists" ":" domain-spec
+		d.domainSpec, ok = strings.CutPrefix(rest, ":")
+		ok = ok && d.domainSpec != ""
+	case "ptr":
+		// "ptr" [ ":" domain-spec ]
+		ok = rest == ""
+		if !ok {
+			d.domainSpec, ok = strings.CutPrefix(rest, ":")
+			ok = ok && d.domainSpec != ""
+		}
+	case "a", "mx":
+		// "a" [ ":" domain-spec ] [ dual-cidr-length ]
+		d.domainSpec, d.cidr4, d.cidr6, ok = splitDualCIDR(rest)
+	case "ip4", "ip6":
+		// "ip4" ":" ip4-network [ ip4-cidr-length ], the same for ip6
+		d.param, ok = strings.CutPrefix(rest, ":")
+	}
+	if !ok {
+		return invalidTerm{t}
+	}
+	return d
+}
+
+// splitDualCIDR parses what follows "a" or "mx": [ ":" domain-spec ]
+// [ dual-cidr-length ], dual-cidr-length = [ ip4-cidr-length ]
+// [ "/" ip6-cidr-length ] (§5.3, §5.4, §12). The lengths are the "//N" and
+// "/N" at the very end, after the domain-spec, so a '/' inside it (a macro
+// delimiter, say) stays in the domain-spec.
+func splitDualCIDR(s string) (spec string, cidr4, cidr6 int, ok bool) {
+	cidr4, cidr6 = 32, 128
+	if i := strings.LastIndex(s, "//"); i >= 0 && allDigits(s[i+2:]) {
+		if cidr6, ok = cidrLength(s[i+2:], 128); !ok {
+			return "", 0, 0, false
+		}
+		s = s[:i]
+	}
+	if i := strings.LastIndexByte(s, '/'); i >= 0 && allDigits(s[i+1:]) {
+		if cidr4, ok = cidrLength(s[i+1:], 32); !ok {
+			return "", 0, 0, false
+		}
+		s = s[:i]
+	}
+	if s == "" {
+		return "", cidr4, cidr6, true
+	}
+	spec, ok = strings.CutPrefix(s, ":")
+	if !ok || spec == "" {
+		return "", 0, 0, false
+	}
+	return spec, cidr4, cidr6, true
+}
+
+// cidrLength parses a prefix length: "0", or a number without a leading
+// zero, at most max (§12: ip4-cidr-length 0-32, ip6-cidr-length 0-128).
+func cidrLength(s string, max int) (int, bool) {
+	if len(s) > 1 && s[0] == '0' {
+		return 0, false
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil || n > max {
+		return 0, false
+	}
+	return n, true
+}
+
+func allDigits(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return s != ""
+}
+
+// validModifierName: name = ALPHA *( ALPHA / DIGIT / "-" / "_" / "." )
+// (§4.6.1).
+func validModifierName(name string) bool {
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		alpha := 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z'
+		if i == 0 && !alpha {
+			return false
+		}
+		if !alpha && !('0' <= c && c <= '9') && c != '-' && c != '_' && c != '.' {
+			return false
+		}
+	}
+	return name != ""
 }
