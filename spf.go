@@ -340,7 +340,7 @@ func (c *check) processExplanation(exp string, ip net.IP, domain, sender string)
 	explanation := txts[0]
 
 	// Expand explanation macro
-	expanded, res := c.macro(explanation, ip, domain, sender, c.helo)
+	expanded, res := c.explanationText(explanation, ip, domain, sender, c.helo)
 	if res != None {
 		return ""
 	}
