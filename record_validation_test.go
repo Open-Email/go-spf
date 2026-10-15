@@ -67,3 +67,31 @@ func TestInitialSingleLabelDomain(t *testing.T) {
 		t.Errorf("single-label initial domain: got %s, want %s", got, spf.None)
 	}
 }
+
+// A quoted local part may itself begin with '@'. Callers such as go-smtp
+// can pass it decoded, so only an empty part before the LAST '@' calls for
+// the RFC 7208 section 4.3 postmaster fallback.
+func TestPostmasterFallbackPreservesLeadingAtLocalPart(t *testing.T) {
+	r := resolverWith(map[string][]string{
+		"example.com":     {"v=spf1 -all exp=why.example.com"},
+		"why.example.com": {"%{s}|%{l}|%{o}"},
+	})
+	for _, tc := range []struct {
+		sender, wantSender, wantLocal string
+	}{
+		{"@example.com", "postmaster@example.com", "postmaster"},
+		{"@@example.com", "@@example.com", "@"},
+		{"@user@example.com", "@user@example.com", "@user"},
+		{`"@user"@example.com`, `"@user"@example.com`, `"@user"`},
+		{`"@"@example.com`, `"@"@example.com`, `"@"`},
+		{"user@example.com", "user@example.com", "user"},
+	} {
+		t.Run(tc.sender, func(t *testing.T) {
+			result, explanation := spf.CheckHostWithExplanationAndResolver(ctx, net.ParseIP("192.0.2.3"), "example.com", tc.sender, "", r)
+			want := tc.wantSender + "|" + tc.wantLocal + "|example.com"
+			if result != spf.Fail || explanation != want {
+				t.Errorf("got %s, %q; want %s, %q", result, explanation, spf.Fail, want)
+			}
+		})
+	}
+}
