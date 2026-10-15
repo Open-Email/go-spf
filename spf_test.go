@@ -1009,7 +1009,7 @@ func TestExpModifier(t *testing.T) {
 		t.Errorf("expected empty explanation on Pass, got %q", exp)
 	}
 
-	// Case 3: Redirect to Fail with exp
+	// Case 3: Redirect ignores this policy's exp (RFC 7208 section 6.2).
 	r = resolverWith(map[string][]string{
 		"domain.com":  {"v=spf1 redirect=other.com exp=explain.com"},
 		"other.com":   {"v=spf1 -all"},
@@ -1020,8 +1020,8 @@ func TestExpModifier(t *testing.T) {
 	if res != spf.Fail {
 		t.Errorf("expected Fail from redirect, got %s", res)
 	}
-	if exp != "Redirected fail" {
-		t.Errorf("expected explanation 'Redirected fail', got %q", exp)
+	if exp != "" {
+		t.Errorf("expected no explanation from the original policy after redirect, got %q", exp)
 	}
 }
 

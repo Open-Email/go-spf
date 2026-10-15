@@ -7,6 +7,7 @@ toolchain go1.24.1
 require (
 	github.com/miekg/dns v1.1.72
 	golang.org/x/net v0.50.0
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
