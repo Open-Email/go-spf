@@ -171,6 +171,17 @@ func (c *check) checkHost(ip net.IP, domain, sender string) (Result, string) {
 		}
 	}
 
+	// RFC 7208 §4.6: "If there are any syntax errors anywhere in the
+	// record, check_host() returns immediately with the result
+	// "permerror", without further interpretation." That includes the
+	// macros of every domain-spec (§7.1): of a term evaluation would not
+	// reach, and of exp=, which is only read on a Fail.
+	for _, term := range terms {
+		if spec, ok := domainSpecOf(term); ok && !validDomainSpec(spec) {
+			return PermError, ""
+		}
+	}
+
 	for _, term := range terms {
 		switch t := term.(type) {
 		case directive:
@@ -500,6 +511,25 @@ func (d directive) domain(domain string) string {
 		return parts[0]
 	}
 	return domain
+}
+
+// domainSpecOf returns the domain-spec a term carries: the target of a:,
+// mx:, ptr:, include: and exists:, and the value of redirect= and exp=.
+func domainSpecOf(term interface{}) (string, bool) {
+	switch t := term.(type) {
+	case directive:
+		switch t.mechanism {
+		case "a", "mx", "ptr", "include":
+			return t.domain(""), true
+		case "exists":
+			return t.param, true
+		}
+	case modifier:
+		if t.name == "redirect" || t.name == "exp" {
+			return t.value, true
+		}
+	}
+	return "", false
 }
 
 func (d directive) cidr() string {
