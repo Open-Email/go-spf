@@ -1204,8 +1204,7 @@ func TestUnqueryableExpandedNameLimits(t *testing.T) {
 // TestMalformedRecordNameStaysPermError: a name the RECORD spells wrong is
 // the publisher's error, not the sender's, and stays a PermError (RFC 7208
 // §4.6), also when a macro sits beside the malformed text. An unknown macro
-// letter (a syntax error, RFC 7208 §7.1) expands to nothing here, so the
-// empty label it leaves is the record's own too.
+// letter is a syntax error (RFC 7208 §7.1), a PermError of its own.
 func TestMalformedRecordNameStaysPermError(t *testing.T) {
 	for _, record := range []string{
 		"v=spf1 exists:bad+label.example.com -all",
