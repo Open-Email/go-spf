@@ -56,11 +56,38 @@ func (c check) expand(m string, ip net.IP, domain, sender, helo string, explain 
 	return expanded, None
 }
 
-// validDomainSpec reports whether the macros of a domain-spec are well formed,
-// without expanding (or looking up) anything.
+// validDomainSpec checks macro-string domain-end (RFC 7208 section 7.1)
+// without expansion or DNS lookups. A domain-end is a final macro expansion,
+// or a dot and a toplabel, optionally followed by a root dot.
 func validDomainSpec(spec string) bool {
-	_, ok := scanMacroString(spec, false, func(macroExpr) string { return "" })
-	return ok
+	_, ok, endsInMacro := scanMacroStringEnd(spec, false, func(macroExpr) string { return "" })
+	if !ok || spec == "" {
+		return false
+	}
+	if endsInMacro {
+		return true
+	}
+	spec = strings.TrimSuffix(spec, ".")
+	dot := strings.LastIndexByte(spec, '.')
+	if dot < 0 {
+		return false
+	}
+	label := spec[dot+1:]
+	if label == "" || label[0] == '-' || label[len(label)-1] == '-' {
+		return false
+	}
+	hasLetterOrHyphen := false
+	for i := 0; i < len(label); i++ {
+		c := lowerASCII(label[i])
+		switch {
+		case 'a' <= c && c <= 'z', c == '-':
+			hasLetterOrHyphen = true
+		case '0' <= c && c <= '9':
+		default:
+			return false
+		}
+	}
+	return hasLetterOrHyphen
 }
 
 // recordName is spec with each macro standing for one valid label, which is
@@ -78,15 +105,29 @@ func recordName(spec string) string {
 // syntax error: a '%' followed by anything else or by nothing, a "%{" with
 // no "}", or an expression parseMacroExpr refuses.
 func scanMacroString(m string, explain bool, expand func(macroExpr) string) (string, bool) {
+	expanded, ok, _ := scanMacroStringEnd(m, explain, expand)
+	return expanded, ok
+}
+
+// scanMacroStringEnd also reports whether the final token is macro-expand,
+// including %% / %_ / %-. Escaped percents followed by literal text cannot
+// accidentally satisfy domain-end (for example, %%{d}).
+func scanMacroStringEnd(m string, explain bool, expand func(macroExpr) string) (string, bool, bool) {
 	var b strings.Builder
+	endsInMacro := false
 	for i := 0; i < len(m); i++ {
 		if m[i] != '%' {
+			if (m[i] < '!' || m[i] > '~') && !(explain && m[i] == ' ') {
+				return "", false, false
+			}
 			b.WriteByte(m[i])
+			endsInMacro = false
 			continue
 		}
+		endsInMacro = true
 		i++
 		if i == len(m) {
-			return "", false
+			return "", false, false
 		}
 		switch m[i] {
 		case '%':
@@ -98,19 +139,19 @@ func scanMacroString(m string, explain bool, expand func(macroExpr) string) (str
 		case '{':
 			end := strings.IndexByte(m[i:], '}')
 			if end < 0 {
-				return "", false
+				return "", false, false
 			}
 			e, ok := parseMacroExpr(m[i+1:i+end], explain)
 			if !ok {
-				return "", false
+				return "", false, false
 			}
 			b.WriteString(expand(e))
 			i += end
 		default:
-			return "", false
+			return "", false, false
 		}
 	}
-	return b.String(), true
+	return b.String(), true, endsInMacro
 }
 
 // parseMacroExpr parses what stands between "%{" and "}": a macro-letter

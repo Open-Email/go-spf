@@ -5,6 +5,7 @@ package spf
 import (
 	"context"
 	"net"
+	"net/netip"
 	"strconv"
 	"strings"
 )
@@ -76,6 +77,11 @@ func CheckHostWithExplanation(ctx context.Context, ip net.IP, domain, sender, he
 func CheckHostWithExplanationAndResolver(ctx context.Context, ip net.IP, domain, sender, helo string, r Resolver) (Result, string) {
 	if sender == "" {
 		sender = "postmaster@" + helo
+	} else if strings.LastIndexByte(sender, '@') == 0 {
+		// RFC 7208 section 4.3: an absent local part is postmaster.
+		// The local part is everything before the LAST '@'; a decoded
+		// quoted local part can itself start with or contain '@'.
+		sender = "postmaster" + sender
 	}
 
 	c := check{
@@ -124,7 +130,7 @@ func (c *check) checkHost(ip net.IP, domain, sender string) (Result, string) {
 	// PermError as for a target with no SPF record (RFC 7208 §5.2, §6.1).
 	var err error
 	domain, err = canonicalDNSName(domain)
-	if err != nil {
+	if err != nil || !strings.Contains(domain, ".") {
 		return None, ""
 	}
 	// Defence-in-depth: limit recursion depth independently of DNS counter
@@ -178,6 +184,11 @@ func (c *check) checkHost(ip net.IP, domain, sender string) (Result, string) {
 		}
 		if spec, ok := domainSpecOf(term); ok && !validDomainSpec(spec) {
 			return PermError, ""
+		}
+		if m, ok := term.(modifier); ok {
+			if _, valid := scanMacroString(m.value, false, func(macroExpr) string { return "" }); !valid {
+				return PermError, ""
+			}
 		}
 	}
 
@@ -315,16 +326,14 @@ func (c *check) checkHost(ip net.IP, domain, sender string) (Result, string) {
 		if result != None {
 			return result, ""
 		}
-		res, _ := c.checkHost(ip, target, sender)
+		res, targetExplanation := c.checkHost(ip, target, sender)
 		// RFC 7208 §6.1: if no SPF record is found, the result is PermError rather than None.
 		if res == None {
 			return PermError, ""
 		}
-		// RFC 7208 §6.2: if the result is Fail, process exp= from this policy.
-		if res == Fail {
-			return res, c.processExplanation(explanation, ip, domain, sender)
-		}
-		return res, ""
+		// RFC 7208 section 6.2: redirect uses the target policy's exp,
+		// never the original policy's explanation.
+		return res, targetExplanation
 	}
 
 	return Neutral, ""
@@ -342,11 +351,11 @@ func (c *check) processExplanation(exp string, ip net.IP, domain, sender string)
 
 	// Lookup TXT record
 	txts, err := c.resolver.LookupTXT(c.ctx, target)
-	if err != nil || len(txts) == 0 {
+	if err != nil || len(txts) != 1 {
 		return ""
 	}
 
-	// RFC 7208 §6.2: if there are multiple TXT records, any one may be used.
+	// RFC 7208 section 6.2: exactly one explanation TXT record is required.
 	explanation := txts[0]
 
 	// Expand explanation macro
@@ -553,7 +562,7 @@ func domainSpecOf(term interface{}) (string, bool) {
 	case directive:
 		switch t.mechanism {
 		case "a", "mx", "ptr", "include", "exists":
-			return t.domainSpec, true
+			return t.domainSpec, t.domainSpec != ""
 		}
 	case modifier:
 		if t.name == "redirect" || t.name == "exp" {
@@ -568,6 +577,14 @@ func domainSpecOf(term interface{}) (string, bool) {
 // Mechanism and modifier names are normalized to lowercase; parameter
 // values are preserved.
 func parseSPF(spf string) []interface{} {
+	// Published SPF records are printable ASCII, with SP as the only
+	// term separator (RFC 7208 sections 3.1 and 4.6.1; RFC 8616 section 4).
+	// Validate before splitting so controls cannot create separate terms.
+	for i := 0; i < len(spf); i++ {
+		if spf[i] < ' ' || spf[i] > '~' {
+			return []interface{}{invalidTerm{spf}}
+		}
+	}
 	// Strip v=spf1 prefix case-insensitively
 	if hasPrefixFold(spf, "v=spf1") {
 		spf = spf[6:]
@@ -625,6 +642,7 @@ func parseTerm(t string) interface{} {
 	case "ip4", "ip6":
 		// "ip4" ":" ip4-network [ ip4-cidr-length ], the same for ip6
 		d.param, ok = strings.CutPrefix(rest, ":")
+		ok = ok && validIPNetwork(d.param, d.mechanism == "ip6")
 	}
 	if !ok {
 		return invalidTerm{t}
@@ -664,7 +682,7 @@ func splitDualCIDR(s string) (spec string, cidr4, cidr6 int, ok bool) {
 // cidrLength parses a prefix length: "0", or a number without a leading
 // zero, at most max (§12: ip4-cidr-length 0-32, ip6-cidr-length 0-128).
 func cidrLength(s string, max int) (int, bool) {
-	if len(s) > 1 && s[0] == '0' {
+	if !allDigits(s) || len(s) > 1 && s[0] == '0' {
 		return 0, false
 	}
 	n, err := strconv.Atoi(s)
@@ -672,6 +690,28 @@ func cidrLength(s string, max int) (int, bool) {
 		return 0, false
 	}
 	return n, true
+}
+
+// validIPNetwork validates even mechanisms for the other client family and
+// those after an earlier match, so malformed networks are syntax errors.
+func validIPNetwork(network string, ipv6 bool) bool {
+	parts := strings.Split(network, "/")
+	if len(parts) > 2 {
+		return false
+	}
+	ip, err := netip.ParseAddr(parts[0])
+	if err != nil || ip.Zone() != "" || ip.Is6() != ipv6 {
+		return false
+	}
+	if len(parts) == 2 {
+		max := 32
+		if ipv6 {
+			max = 128
+		}
+		_, ok := cidrLength(parts[1], max)
+		return ok
+	}
+	return true
 }
 
 func allDigits(s string) bool {

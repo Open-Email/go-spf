@@ -133,12 +133,25 @@ Additional features:
 - Terms parsed by the RFC 7208 §4.6.1 grammar: a mechanism name matches the whole name; an unknown mechanism or malformed term (`foo:bar`, `-all.`, `a:`, `a/33`) is a PermError anywhere in the record, while unknown modifiers are ignored
 - `a` and `mx` take a dual-cidr-length with or without a domain (`a/24`, `mx//64`, `a:example.com/24//64`): the IPv4 length for IPv4 clients, the IPv6 length for IPv6 clients
 - Duplicate `redirect=` or `exp=` modifier detection (→ PermError)
+- Validate IP networks, prefix lengths, domain-spec endings and unknown modifiers before evaluating any mechanism
+- Published policies and explanation TXT records must be ASCII; internationalized SMTP domains and macro-expanded domain names are converted to A-labels before DNS lookup (RFC 8616 §4)
+- Redirected failures use the target policy's explanation; explanation lookups require exactly one TXT record
 - IPv6 PTR validation uses AAAA records (not A)
 - DNS errors on `exists` mechanism correctly return TempError
 - Void lookup counting on `exists` empty responses
 - TCP fallback on DNS truncation
 - Configurable DNS timeout via `DNSTimeout`
 - Context support for cancellation and deadline propagation
+
+## Conformance tests
+
+`go test -race ./...` runs the complete OpenSPF RFC 7208 suite (203 cases
+across 16 scenarios), plus package regressions, without public DNS access.
+The upstream YAML and its license are in `testdata`; `openspf_test.go`
+records the pinned upstream revision and deliberate deviations. Five cases
+assert the existing IDNA policy for literal non-IDNA DNS labels, and one
+explanation comparison allows lowercase IPv6 nibbles as in RFC 7208 §7.4.
+No upstream cases are skipped.
 
 ## License
 

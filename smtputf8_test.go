@@ -8,20 +8,26 @@ import (
 )
 
 func TestSMTPUTF8DNSBoundaries(t *testing.T) {
-	for _, tc := range []struct{ name, domain, policy string }{
-		{"initial", "BÜCHER.de.", "v=spf1 +all"},
-		{"include", "example.test", "v=spf1 include:bücher.de -all"},
-		{"redirect", "example.test", "v=spf1 redirect=bücher.de"},
-		{"include macro", "example.test", "v=spf1 include:%{o} -all"},
-		{"redirect macro", "example.test", "v=spf1 redirect=%{o}"},
-		{"a macro", "example.test", "v=spf1 a:%{o} -all"},
-		{"mx macro", "example.test", "v=spf1 mx:%{o} -all"},
-		{"exists macro", "example.test", "v=spf1 exists:%{o} -all"},
+	// RFC 8616 section 4 retains ASCII-only SPF records. Unicode SMTP input
+	// and macro-expanded domains are converted to A-labels before lookup;
+	// a literal U-label in the published record is a syntax error.
+	for _, tc := range []struct {
+		name, domain, policy string
+		want                 spf.Result
+	}{
+		{"initial", "BÜCHER.de.", "v=spf1 +all", spf.Pass},
+		{"include", "example.test", "v=spf1 include:bücher.de -all", spf.PermError},
+		{"redirect", "example.test", "v=spf1 redirect=bücher.de", spf.PermError},
+		{"include macro", "example.test", "v=spf1 include:%{o} -all", spf.Pass},
+		{"redirect macro", "example.test", "v=spf1 redirect=%{o}", spf.Pass},
+		{"a macro", "example.test", "v=spf1 a:%{o} -all", spf.Pass},
+		{"mx macro", "example.test", "v=spf1 mx:%{o} -all", spf.Pass},
+		{"exists macro", "example.test", "v=spf1 exists:%{o} -all", spf.Pass},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := &mockResolver{txt: map[string][]string{"example.test": {tc.policy}, "xn--bcher-kva.de": {"v=spf1 +all"}}, a: map[string][]string{"xn--bcher-kva.de": {"192.0.2.1"}}, mx: map[string][]string{"xn--bcher-kva.de": {"BÜCHER.de."}}}
-			if got := spf.CheckHostWithResolver(context.Background(), net.ParseIP("192.0.2.1"), tc.domain, "José@bücher.de", "bücher.de", r); got != spf.Pass {
-				t.Fatalf("got %s", got)
+			if got := spf.CheckHostWithResolver(context.Background(), net.ParseIP("192.0.2.1"), tc.domain, "José@bücher.de", "bücher.de", r); got != tc.want {
+				t.Fatalf("got %s, want %s", got, tc.want)
 			}
 		})
 	}
