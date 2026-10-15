@@ -125,7 +125,7 @@ func (c *check) lookupSPF(domain string) (string, Result) {
 func (c *check) checkHost(ip net.IP, domain, sender string) (Result, string) {
 	// RFC 7208 §4.3: a malformed <domain> makes check_host() return None.
 	// An include/redirect target the record spells wrong never reaches here
-	// (validDomainSpec answers PermError for it). One that only the expanded data
+	// (domain-spec validation answers PermError for it). One that only the expanded data
 	// made unqueryable does, and include and redirect turn its None into
 	// PermError as for a target with no SPF record (RFC 7208 §5.2, §6.1).
 	var err error
