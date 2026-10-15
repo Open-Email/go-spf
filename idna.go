@@ -147,12 +147,13 @@ func canonicalHosts(hosts []string) ([]string, error) {
 }
 
 // domainSpec expands and converts a target name, truncated from the left to
-// 253 octets (RFC 7208 §7.3). A name the record itself spells wrong is a
-// PermError (RFC 7208 §4.6). A name that only the expanded data made
-// unqueryable (a local part such as "user+tag" or "o'brien", a label over 63
-// octets) names nothing: it is returned unconverted, so the lookup answers it
-// as a name that does not exist and the mechanism does not match, counted as
-// any other lookup and void lookup (Open-Email/smtp-in#129).
+// 253 octets (RFC 7208 §7.3). A name the record itself spells wrong is
+// rejected up front by validDomainSpec (RFC 7208 §4.6). A name that only the
+// expanded data made unqueryable (a local part such as "user+tag" or
+// "o'brien", a label over 63 octets) names nothing: it is returned
+// unconverted, so the lookup answers it as a name that does not exist and
+// the mechanism does not match, counted as any other lookup and void lookup
+// (Open-Email/smtp-in#129).
 func (c *check) domainSpec(spec string, ip net.IP, domain, sender string) (string, Result) {
 	expanded, result := c.macro(spec, ip, domain, sender, c.helo)
 	if result != None {
@@ -161,9 +162,6 @@ func (c *check) domainSpec(spec string, ip net.IP, domain, sender string) (strin
 	name, err := queryName(expanded)
 	if err == nil {
 		return name, None
-	}
-	if _, err := queryName(recordName(spec)); err != nil {
-		return "", PermError
 	}
 	return expanded, None
 }

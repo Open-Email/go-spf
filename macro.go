@@ -56,12 +56,16 @@ func (c check) expand(m string, ip net.IP, domain, sender, helo string, explain 
 	return expanded, None
 }
 
-// validDomainSpec checks macro-string domain-end (RFC 7208 section 7.1)
-// without expansion or DNS lookups. A domain-end is a final macro expansion,
-// or a dot and a toplabel, optionally followed by a root dot.
+// validDomainSpec checks macro-string domain-end (RFC 7208 section 7.1) and
+// that the record's own labels are valid DNS labels, without expanding
+// sender macros or making DNS lookups. A domain-end is a final macro
+// expansion, or a dot and a toplabel, optionally followed by a root dot.
 func validDomainSpec(spec string) bool {
-	_, ok, endsInMacro := scanMacroStringEnd(spec, false, func(macroExpr) string { return "" })
+	recordLabels, ok, endsInMacro := scanMacroStringEnd(spec, false, func(macroExpr) string { return "x" })
 	if !ok || spec == "" {
+		return false
+	}
+	if _, err := canonicalDNSName(recordLabels); err != nil {
 		return false
 	}
 	if endsInMacro {
@@ -88,14 +92,6 @@ func validDomainSpec(spec string) bool {
 		}
 	}
 	return hasLetterOrHyphen
-}
-
-// recordName is spec with each macro standing for one valid label, which is
-// what the record's own text spells once the sender's data is taken out. It
-// is only asked about a spec that expanded, so one that is well formed.
-func recordName(spec string) string {
-	name, _ := scanMacroString(spec, false, func(macroExpr) string { return "x" })
-	return name
 }
 
 // scanMacroString walks a macro-string (RFC 7208 §7.1) in one pass, copying

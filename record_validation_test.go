@@ -15,6 +15,8 @@ func TestMalformedRecordAnywhere(t *testing.T) {
 		"ip4:1.2.3.4/032", "ip4:2001:db8::1", "ip4:", "ip4:1.2.3.4/+24",
 		"ip6:::1/129", "ip6:::1//33", "ip6::CAFE::BABE", "ip6:192.0.2.1", "ip6:",
 		"a:foo-bar", "mx:111.222.33.44", "exists:museum", "a:foo.-com", "a:foo.c0m!",
+		"exists:bad+label.example.com", "exists:bad+label.%{d}", "a:foo:bar/baz.example.com",
+		"a:mail.example...com", "exp=bad+label.example.com",
 		"redirect=", "redirect=-all", "exp=", "exp=-all", "foo=%abc", "foo=%{z}",
 		"a:ctrl.example.com\rptr", "ip4:192.0.2.3\n", "foo=nonascii\u00e9",
 	} {
@@ -29,8 +31,8 @@ func TestMalformedRecordAnywhere(t *testing.T) {
 	}
 }
 
-// domain-end must end in an actual macro token or a literal dot/toplabel.
-// An escaped percent followed by braces is literal text, not a macro token.
+// domain-end must end in an actual macro token or a literal dot/toplabel,
+// and record-authored labels must be valid DNS labels even after +all.
 func TestDomainSpecEnd(t *testing.T) {
 	for _, tc := range []struct {
 		term string
@@ -41,10 +43,13 @@ func TestDomainSpecEnd(t *testing.T) {
 		{"a:%{d}x.example", spf.Pass},
 		{"a:foo.example.", spf.Pass},
 		{"a:foo.123-456", spf.Pass},
-		{"exists:x.%%", spf.Pass},
-		{"exists:x.%_", spf.Pass},
-		{"a:x.%-", spf.Pass},
 		{"foo=", spf.Pass},
+		{"foo=x.%%", spf.Pass},
+		{"foo=x.%_", spf.Pass},
+		{"foo=x.%-", spf.Pass},
+		{"exists:x.%%", spf.PermError},
+		{"exists:x.%_", spf.PermError},
+		{"a:x.%-", spf.PermError},
 		{"a:%{d}x", spf.PermError},
 		{"a:%%{d}", spf.PermError},
 		{"a:%{d}.", spf.PermError},

@@ -201,11 +201,12 @@ func TestSyntaxErrorAnywhereInRecord(t *testing.T) {
 		{"v=spf1 ip4:" + client + " redirect=%{x}.example.com", spf.PermError},
 		{"v=spf1 +all exp=%{r}.example.com", spf.PermError},
 		{"v=spf1 -all exp=%{t}.example.com", spf.PermError},
+		{"v=spf1 ip4:" + client + " exists:%%{l}.example.com -all", spf.PermError},
 		// Well formed: evaluation is unchanged.
 		{"v=spf1 ip4:" + client + " exists:%{l}.example.com -all", spf.Pass},
 		{"v=spf1 exists:%{l}.example.com -all", spf.Pass},
 		{"v=spf1 -all exp=%{l}.example.com", spf.Fail},
-		{"v=spf1 ip4:" + client + " exists:%%{l}.example.com -all", spf.Pass},
+		{"v=spf1 ip4:" + client + " foo=%%{z} -all", spf.Pass},
 	} {
 		cases = append(cases, testCase{
 			name: tc.record, ip: client, domain: "example.com", sender: "user@example.com", want: tc.want,
