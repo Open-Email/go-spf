@@ -77,8 +77,10 @@ func CheckHostWithExplanation(ctx context.Context, ip net.IP, domain, sender, he
 func CheckHostWithExplanationAndResolver(ctx context.Context, ip net.IP, domain, sender, helo string, r Resolver) (Result, string) {
 	if sender == "" {
 		sender = "postmaster@" + helo
-	} else if strings.HasPrefix(sender, "@") {
+	} else if strings.LastIndexByte(sender, '@') == 0 {
 		// RFC 7208 section 4.3: an absent local part is postmaster.
+		// The local part is everything before the LAST '@'; a decoded
+		// quoted local part can itself start with or contain '@'.
 		sender = "postmaster" + sender
 	}
 
