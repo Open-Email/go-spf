@@ -42,33 +42,39 @@ func canonicalDNSName(name string) (string, error) {
 	return result, nil
 }
 
+// idnaResolver converts every name before the lookup. A name that cannot be
+// converted cannot be put in a query, so no DNS data exists for it: it is
+// answered as the NXDOMAIN path answers (no records, no error), and each
+// mechanism takes it from there (a void lookup and no match; include and
+// redirect find no record). In check_host only a macro-expanded name reaches
+// here unconverted (see domainSpec); LookupSPF passes its argument as given.
 type idnaResolver struct{ Resolver }
 
 func (r idnaResolver) LookupTXT(ctx context.Context, name string) ([]string, error) {
 	name, err := canonicalDNSName(name)
 	if err != nil {
-		return nil, err
+		return nil, nil
 	}
 	return r.Resolver.LookupTXT(ctx, name)
 }
 func (r idnaResolver) LookupA(ctx context.Context, name string) ([]net.IP, error) {
 	name, err := canonicalDNSName(name)
 	if err != nil {
-		return nil, err
+		return nil, nil
 	}
 	return r.Resolver.LookupA(ctx, name)
 }
 func (r idnaResolver) LookupAAAA(ctx context.Context, name string) ([]net.IP, error) {
 	name, err := canonicalDNSName(name)
 	if err != nil {
-		return nil, err
+		return nil, nil
 	}
 	return r.Resolver.LookupAAAA(ctx, name)
 }
 func (r idnaResolver) LookupMX(ctx context.Context, name string) ([]string, error) {
 	name, err := canonicalDNSName(name)
 	if err != nil {
-		return nil, err
+		return nil, nil
 	}
 	hosts, err := r.Resolver.LookupMX(ctx, name)
 	if err != nil {
@@ -102,14 +108,23 @@ func canonicalHosts(hosts []string) ([]string, error) {
 	return result, nil
 }
 
+// domainSpec expands and converts a target name. A name the record itself
+// spells wrong is a PermError (RFC 7208 §4.6). A name that only the expanded
+// data made unqueryable (a local part such as "user+tag" or "o'brien", a
+// label over 63 octets) names nothing: it is returned unconverted, so the
+// lookup answers it as a name that does not exist and the mechanism does not
+// match, counted as any other lookup and void lookup (Open-Email/smtp-in#129).
 func (c *check) domainSpec(spec string, ip net.IP, domain, sender string) (string, Result) {
 	expanded, result := c.macro(spec, ip, domain, sender, c.helo)
 	if result != None {
 		return "", result
 	}
 	name, err := canonicalDNSName(expanded)
-	if err != nil {
+	if err == nil {
+		return name, None
+	}
+	if _, err := canonicalDNSName(recordName(spec)); err != nil {
 		return "", PermError
 	}
-	return name, None
+	return expanded, None
 }
