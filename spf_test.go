@@ -927,8 +927,10 @@ func TestMacroIPv6(t *testing.T) {
 	if got := spf.Macro("%{v}", ip, "example.com", "u@example.com", ""); got != "ip6" {
 		t.Errorf("%%{v} for IPv6: got %q, want %q", got, "ip6")
 	}
-	if got := spf.Macro("%{i}", ip, "example.com", "u@example.com", ""); got != ip.String() {
-		t.Errorf("%%{i} for IPv6: got %q, want %q", got, ip.String())
+	// RFC 7208 §7.3: "dot-format", the 32 nibbles, not the colon form.
+	want := "2.0.0.1.0.d.b.8.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.1"
+	if got := spf.Macro("%{i}", ip, "example.com", "u@example.com", ""); got != want {
+		t.Errorf("%%{i} for IPv6: got %q, want %q", got, want)
 	}
 }
 

@@ -8,38 +8,76 @@ import (
 	"strings"
 )
 
+// maxNameLength is the longest domain name in dotted form, without the
+// trailing dot (RFC 7208 §7.3).
+const maxNameLength = 253
+
 // DNS mechanism names may have ASCII service labels such as _spf. Convert
 // internationalized labels with Lookup while retaining those service labels.
 func canonicalDNSName(name string) (string, error) {
+	return convertName(name, false)
+}
+
+// queryName converts a macro-expanded name for a query. One longer than 253
+// octets is not refused: "the left side is truncated to fit, by removing
+// successive domain labels (and their following dots) until the total
+// length does not exceed 253 characters" (RFC 7208 §7.3). Labels are
+// measured converted, as the query carries them, and only the labels that
+// remain have to be valid.
+func queryName(name string) (string, error) {
+	return convertName(name, true)
+}
+
+func convertName(name string, truncate bool) (string, error) {
 	name = strings.NewReplacer("。", ".", "．", ".", "｡", ".").Replace(name)
 	labels := strings.Split(strings.TrimSuffix(name, "."), ".")
+	errs := make([]error, len(labels))
+	length := -1
 	for i, label := range labels {
-		if label == "" {
-			return "", fmt.Errorf("empty DNS label")
-		}
-		if strings.Contains(label, "_") {
-			for _, r := range label {
-				if !(r == '_' || r == '-' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9') {
-					return "", fmt.Errorf("invalid service label")
-				}
-			}
-			labels[i] = strings.ToLower(label)
-		} else {
-			ascii, err := idna.Lookup.ToASCII(label)
-			if err != nil {
-				return "", err
-			}
-			labels[i] = strings.ToLower(ascii)
-		}
-		if len(labels[i]) == 0 || len(labels[i]) > 63 || strings.Contains(labels[i], ".") {
-			return "", fmt.Errorf("invalid DNS label")
+		labels[i], errs[i] = canonicalLabel(label)
+		length += len(labels[i]) + 1
+	}
+	first := 0
+	for truncate && length > maxNameLength && first < len(labels)-1 {
+		length -= len(labels[first]) + 1
+		first++
+	}
+	for _, err := range errs[first:] {
+		if err != nil {
+			return "", err
 		}
 	}
-	result := strings.Join(labels, ".")
-	if len(result) > 253 {
+	if length > maxNameLength {
 		return "", fmt.Errorf("DNS name too long")
 	}
-	return result, nil
+	return strings.Join(labels[first:], "."), nil
+}
+
+// canonicalLabel converts one label. On error it returns the label as given,
+// so that a name can still be measured.
+func canonicalLabel(label string) (string, error) {
+	if label == "" {
+		return label, fmt.Errorf("empty DNS label")
+	}
+	var converted string
+	if strings.Contains(label, "_") {
+		for _, r := range label {
+			if !(r == '_' || r == '-' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9') {
+				return label, fmt.Errorf("invalid service label")
+			}
+		}
+		converted = strings.ToLower(label)
+	} else {
+		ascii, err := idna.Lookup.ToASCII(label)
+		if err != nil {
+			return label, err
+		}
+		converted = strings.ToLower(ascii)
+	}
+	if len(converted) == 0 || len(converted) > 63 || strings.Contains(converted, ".") {
+		return label, fmt.Errorf("invalid DNS label")
+	}
+	return converted, nil
 }
 
 // idnaResolver converts every name before the lookup. A name that cannot be
@@ -108,22 +146,23 @@ func canonicalHosts(hosts []string) ([]string, error) {
 	return result, nil
 }
 
-// domainSpec expands and converts a target name. A name the record itself
-// spells wrong is a PermError (RFC 7208 §4.6). A name that only the expanded
-// data made unqueryable (a local part such as "user+tag" or "o'brien", a
-// label over 63 octets) names nothing: it is returned unconverted, so the
-// lookup answers it as a name that does not exist and the mechanism does not
-// match, counted as any other lookup and void lookup (Open-Email/smtp-in#129).
+// domainSpec expands and converts a target name, truncated from the left to
+// 253 octets (RFC 7208 §7.3). A name the record itself spells wrong is a
+// PermError (RFC 7208 §4.6). A name that only the expanded data made
+// unqueryable (a local part such as "user+tag" or "o'brien", a label over 63
+// octets) names nothing: it is returned unconverted, so the lookup answers it
+// as a name that does not exist and the mechanism does not match, counted as
+// any other lookup and void lookup (Open-Email/smtp-in#129).
 func (c *check) domainSpec(spec string, ip net.IP, domain, sender string) (string, Result) {
 	expanded, result := c.macro(spec, ip, domain, sender, c.helo)
 	if result != None {
 		return "", result
 	}
-	name, err := canonicalDNSName(expanded)
+	name, err := queryName(expanded)
 	if err == nil {
 		return name, None
 	}
-	if _, err := canonicalDNSName(recordName(spec)); err != nil {
+	if _, err := queryName(recordName(spec)); err != nil {
 		return "", PermError
 	}
 	return expanded, None
