@@ -865,6 +865,35 @@ func TestMacro(t *testing.T) {
 	}
 }
 
+// TestMacroSenderLocalPartWithAt: a quoted local part may hold '@' (RFC 5321
+// §4.1.2), so the sender's domain is what follows the LAST '@'. %{l} and %{o}
+// (RFC 7208 §7.3) must split there; %{d} is the current domain, not the
+// sender's, and %{s} is the whole sender.
+func TestMacroSenderLocalPartWithAt(t *testing.T) {
+	ip := net.ParseIP("192.0.2.3")
+	cases := []struct {
+		sender, macro, want string
+	}{
+		{`"a@b"@email.example.com`, "%{l}", `"a@b"`},
+		{`"a@b"@email.example.com`, "%{o}", "email.example.com"},
+		{`"a@b"@email.example.com`, "%{o2}", "example.com"},
+		{`"a@b"@email.example.com`, "%{or}", "com.example.email"},
+		{`"a@b"@email.example.com`, "%{s}", `"a@b"@email.example.com`},
+		{`"a@b"@email.example.com`, "%{d}", "email.example.com"},
+		// The same local part as a decoder hands it over, quotes removed.
+		{"a@b@email.example.com", "%{l}", "a@b"},
+		{"a@b@email.example.com", "%{o}", "email.example.com"},
+		{"strong-bad@email.example.com", "%{l}", "strong-bad"},
+		{"strong-bad@email.example.com", "%{o}", "email.example.com"},
+	}
+	for _, tc := range cases {
+		got := spf.Macro(tc.macro, ip, "email.example.com", tc.sender, "hello.server")
+		if got != tc.want {
+			t.Errorf("Macro(%q) with sender %q: got %q, want %q", tc.macro, tc.sender, got, tc.want)
+		}
+	}
+}
+
 func TestMacroSpecialEscapes(t *testing.T) {
 	ip := net.ParseIP("192.0.2.3")
 	cases := []struct {
@@ -990,6 +1019,50 @@ func TestExpModifier(t *testing.T) {
 	}
 	if exp != "Redirected fail" {
 		t.Errorf("expected explanation 'Redirected fail', got %q", exp)
+	}
+}
+
+// TestSenderLocalPartWithAt runs %{o} and %{l} through check_host() with a
+// local part that holds '@'. Through an include, %{o} still names the
+// original sender's domain, so the exists name must be built from the domain
+// after the LAST '@' (only that name has an A record); the explanation of a
+// failing record shows what %{l} and %{o} expanded to.
+func TestSenderLocalPartWithAt(t *testing.T) {
+	passing := resolverFull(
+		map[string][]string{
+			"example.com":      {"v=spf1 include:_spf.esp.example -all"},
+			"_spf.esp.example": {"v=spf1 exists:%{o}._senders.esp.example -all"},
+		},
+		nil,
+		map[string][]string{"example.com._senders.esp.example": {"127.0.0.2"}},
+		nil, nil,
+	)
+	failing := resolverWith(map[string][]string{
+		"example.com":         {"v=spf1 -all exp=explain.example.com"},
+		"explain.example.com": {"%{l} may not send for %{o}"},
+	})
+	cases := []struct {
+		sender, local string
+	}{
+		{`"a@b"@example.com`, `"a@b"`},
+		// The same local part as a decoder hands it over, quotes removed.
+		{"a@b@example.com", "a@b"},
+		{"u@example.com", "u"},
+	}
+	ip := net.ParseIP("192.0.2.3")
+	for _, tc := range cases {
+		t.Run(tc.sender, func(t *testing.T) {
+			if got := spf.CheckHostWithResolver(ctx, ip, "example.com", tc.sender, "", passing); got != spf.Pass {
+				t.Errorf("exists:%%{o}._senders.esp.example: got %s, want %s", got, spf.Pass)
+			}
+			res, exp := spf.CheckHostWithExplanationAndResolver(ctx, ip, "example.com", tc.sender, "", failing)
+			if res != spf.Fail {
+				t.Fatalf("-all: got %s, want %s", res, spf.Fail)
+			}
+			if want := tc.local + " may not send for example.com"; exp != want {
+				t.Errorf("explanation: got %q, want %q", exp, want)
+			}
+		})
 	}
 }
 
