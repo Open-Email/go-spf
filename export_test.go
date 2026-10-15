@@ -163,6 +163,20 @@ func Macro(m string, ip net.IP, domain, sender, helo string) string {
 	return r
 }
 
+// MacroResult is Macro with its Result: PermError for a domain-spec whose
+// macros are not well formed (RFC 7208 §7.1).
+func MacroResult(m string, ip net.IP, domain, sender, helo string) (string, Result) {
+	c := check{ctx: context.Background(), resolver: DefaultResolver}
+	return c.macro(m, ip, domain, sender, helo)
+}
+
+// ExplanationMacro expands explanation text (RFC 7208 §6.2), where c, r and
+// t are allowed too.
+func ExplanationMacro(m string, ip net.IP, domain, sender, helo string) (string, Result) {
+	c := check{ctx: context.Background(), resolver: DefaultResolver}
+	return c.explanationText(m, ip, domain, sender, helo)
+}
+
 // ParseSPF exports parseSPF for testing
 func ParseSPF(spf string) []interface{} {
 	return parseSPF(spf)

@@ -2,17 +2,11 @@ package spf
 
 import (
 	"context"
+	"math"
 	"net"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
-)
-
-var (
-	macroSyntax   = regexp.MustCompile(`%[^{_\-%}]`)
-	macroMatch    = regexp.MustCompile("%{[^}]+}")
-	macroReplacer = strings.NewReplacer("%%", "%", "%_", " ", "%-", "%20")
 )
 
 type macro struct {
@@ -22,9 +16,16 @@ type macro struct {
 	sender   string
 	helo     string
 	resolver Resolver
-	// explain is set for explanation text, the only place the c, r and t
-	// letters are allowed (RFC 7208 §7.2).
-	explain bool
+}
+
+// macroExpr is one "%{" macro-letter transformers *delimiter "}" (RFC 7208
+// §7.1).
+type macroExpr struct {
+	letter  byte   // lowercase
+	escape  bool   // the letter was uppercase: URL-escape the result (§7.3)
+	keep    int    // the DIGIT transformer: right-hand parts to keep; 0 keeps all
+	reverse bool   // the "r" transformer
+	delims  string // the delimiters; none splits on "."
 }
 
 // macro expands a domain-spec (RFC 7208 §7.1).
@@ -37,14 +38,9 @@ func (c check) explanationText(m string, ip net.IP, domain, sender, helo string)
 	return c.expand(m, ip, domain, sender, helo, true)
 }
 
+// expand answers PermError for a macro-string that is not well formed. In an
+// explanation the caller then proceeds as if there were no exp= (§6.2).
 func (c check) expand(m string, ip net.IP, domain, sender, helo string, explain bool) (string, Result) {
-	// Skip %% (literal %) for syntax check
-	if len(macroSyntax.FindAllString(strings.ReplaceAll(m, "%%", ""), -1)) != 0 {
-		return m, PermError
-	}
-
-	m = macroReplacer.Replace(m)
-
 	mac := macro{
 		ctx:      c.ctx,
 		ip:       ip,
@@ -52,43 +48,123 @@ func (c check) expand(m string, ip net.IP, domain, sender, helo string, explain 
 		sender:   sender,
 		helo:     helo,
 		resolver: c.resolver,
-		explain:  explain,
 	}
+	expanded, ok := scanMacroString(m, explain, mac.eval)
+	if !ok {
+		return m, PermError
+	}
+	return expanded, None
+}
 
-	return macroMatch.ReplaceAllStringFunc(m, mac.eval), None
+// validDomainSpec reports whether the macros of a domain-spec are well formed,
+// without expanding (or looking up) anything.
+func validDomainSpec(spec string) bool {
+	_, ok := scanMacroString(spec, false, func(macroExpr) string { return "" })
+	return ok
 }
 
 // recordName is spec with each macro standing for one valid label, which is
-// what the record's own text spells once the sender's data is taken out. A
-// letter eval does not expand in a domain-spec, in either case, stands for
-// nothing, as it does in eval.
+// what the record's own text spells once the sender's data is taken out. It
+// is only asked about a spec that expanded, so one that is well formed.
 func recordName(spec string) string {
-	return macroMatch.ReplaceAllStringFunc(macroReplacer.Replace(spec), func(s string) string {
-		if strings.IndexByte("slodipvh", lowerASCII(s[2])) < 0 {
-			return ""
-		}
-		return "x"
-	})
+	name, _ := scanMacroString(spec, false, func(macroExpr) string { return "x" })
+	return name
 }
 
-func (m *macro) eval(s string) string {
-	// s is something like "%{s}" or "%{l1r-}"
-	// strip %{ and }
-	inner := s[2 : len(s)-1]
-
-	if len(inner) == 0 {
-		return ""
+// scanMacroString walks a macro-string (RFC 7208 §7.1) in one pass, copying
+// the literal text, turning "%%", "%_" and "%-" into "%", " " and "%20", and
+// writing what expand makes of each "%{...}". Text that follows "%%" is
+// literal, so "%%{d}" is the four characters "%{d}". It reports false for a
+// syntax error: a '%' followed by anything else or by nothing, a "%{" with
+// no "}", or an expression parseMacroExpr refuses.
+func scanMacroString(m string, explain bool, expand func(macroExpr) string) (string, bool) {
+	var b strings.Builder
+	for i := 0; i < len(m); i++ {
+		if m[i] != '%' {
+			b.WriteByte(m[i])
+			continue
+		}
+		i++
+		if i == len(m) {
+			return "", false
+		}
+		switch m[i] {
+		case '%':
+			b.WriteByte('%')
+		case '_':
+			b.WriteByte(' ')
+		case '-':
+			b.WriteString("%20")
+		case '{':
+			end := strings.IndexByte(m[i:], '}')
+			if end < 0 {
+				return "", false
+			}
+			e, ok := parseMacroExpr(m[i+1:i+end], explain)
+			if !ok {
+				return "", false
+			}
+			b.WriteString(expand(e))
+			i += end
+		default:
+			return "", false
+		}
 	}
+	return b.String(), true
+}
 
-	// 1. Macro letter. RFC 7208 §7.3: "Uppercase macros expand exactly as
-	// their lowercase equivalents, and are then URL escaped."
-	letter := inner[0]
-	escape := 'A' <= letter && letter <= 'Z'
-	letter = lowerASCII(letter)
-	rest := inner[1:]
+// parseMacroExpr parses what stands between "%{" and "}": a macro-letter
+// (slodipvh, and c, r and t in explanation text only, RFC 7208 §7.2), in
+// either case; transformers = *DIGIT ["r"], the DIGIT nonzero (§7.3) and
+// "r" in either case (ABNF strings are case-insensitive, RFC 5234 §2.3);
+// then *delimiter. Anything else is a syntax error.
+func parseMacroExpr(s string, explain bool) (macroExpr, bool) {
+	if s == "" {
+		return macroExpr{}, false
+	}
+	e := macroExpr{letter: lowerASCII(s[0]), escape: 'A' <= s[0] && s[0] <= 'Z'}
+	switch e.letter {
+	case 's', 'l', 'o', 'd', 'i', 'p', 'v', 'h':
+	case 'c', 'r', 't':
+		if !explain {
+			return e, false
+		}
+	default:
+		return e, false
+	}
+	i := 1
+	for i < len(s) && '0' <= s[i] && s[i] <= '9' {
+		i++
+	}
+	if i > 1 {
+		digits := strings.TrimLeft(s[1:i], "0")
+		if digits == "" {
+			return e, false
+		}
+		// A value past what an int holds asks for more parts than any
+		// name has: "all the available parts are used" (§7.3).
+		n, err := strconv.Atoi(digits)
+		if err != nil {
+			n = math.MaxInt
+		}
+		e.keep = n
+	}
+	if i < len(s) && (s[i] == 'r' || s[i] == 'R') {
+		e.reverse = true
+		i++
+	}
+	e.delims = s[i:]
+	for j := 0; j < len(e.delims); j++ {
+		if strings.IndexByte(".-+,/_=", e.delims[j]) < 0 {
+			return e, false
+		}
+	}
+	return e, true
+}
 
+func (m *macro) eval(e macroExpr) string {
 	var t string
-	switch letter {
+	switch e.letter {
 	case 's':
 		t = m.sender
 	case 'l':
@@ -110,89 +186,60 @@ func (m *macro) eval(s string) string {
 	case 'h':
 		t = m.helo
 	case 'c':
-		if !m.explain {
-			return ""
-		}
 		// RFC 7208 §7.3: the client address "for humans to read": the
 		// dotted quad, or the RFC 5952 colon form for IPv6.
 		t = m.ip.String()
 	case 'r':
-		if !m.explain {
-			return ""
-		}
 		// RFC 7208 §7.3: the receiving host's name, which go-spf is not
 		// given, so the "unknown" the RFC substitutes then.
 		t = "unknown"
 	case 't':
-		if !m.explain {
-			return ""
-		}
 		t = strconv.FormatInt(time.Now().Unix(), 10)
-	default:
-		// A letter outside RFC 7208 §7.2 (or c, r, t in a domain-spec)
-		// expands to the empty string.
-		return ""
-	}
-
-	// 2. Transformers and Delimiters
-	// transformers = *DIGIT [ "r" ]
-	// delimiter = "." / "-" / "+" / "," / "/" / "_" / "="
-
-	var digits string
-	var reverse bool
-	var delimiters string
-
-	for _, char := range rest {
-		if char >= '0' && char <= '9' {
-			if delimiters != "" || reverse {
-				continue
-			}
-			digits += string(char)
-		} else if char == 'r' || char == 'R' {
-			if delimiters != "" || reverse {
-				continue
-			}
-			reverse = true
-		} else if strings.ContainsRune(".-+,/_=", char) {
-			delimiters += string(char)
-		}
 	}
 
 	if t == "" {
 		return ""
 	}
 
-	// Split by delimiters
-	// RFC 7208 §7.1: if the delimiter character is not supplied, "." is used.
-	if delimiters == "" {
-		delimiters = "."
+	// RFC 7208 §7.3: split on the delimiters ("." when none are given),
+	// with "no special treatment ... to leading, trailing, or consecutive
+	// delimiters", so parts may be empty; reverse; keep the right-hand
+	// DIGIT parts; rejoin with ".".
+	delims := e.delims
+	if delims == "" {
+		delims = "."
 	}
-
-	parts := strings.FieldsFunc(t, func(r rune) bool {
-		return strings.ContainsRune(delimiters, r)
-	})
-
-	// Reverse if needed
-	if reverse {
+	parts := splitAny(t, delims)
+	if e.reverse {
 		for i, j := 0, len(parts)-1; i < j; i, j = i+1, j-1 {
 			parts[i], parts[j] = parts[j], parts[i]
 		}
 	}
-
-	// Keep last N parts
-	if digits != "" {
-		n, _ := strconv.Atoi(digits)
-		if n > 0 && n < len(parts) {
-			parts = parts[len(parts)-n:]
-		}
+	if e.keep > 0 && e.keep < len(parts) {
+		parts = parts[len(parts)-e.keep:]
 	}
 
-	// Join back with "."
 	result := strings.Join(parts, ".")
-	if escape {
+	if e.escape {
+		// RFC 7208 §7.3: "Uppercase macros expand exactly as their
+		// lowercase equivalents, and are then URL escaped."
 		result = urlEscape(result)
 	}
 	return result
+}
+
+// splitAny splits s at every byte that is one of seps (ASCII), keeping the
+// empty parts.
+func splitAny(s, seps string) []string {
+	var parts []string
+	start := 0
+	for i := 0; i < len(s); i++ {
+		if strings.IndexByte(seps, s[i]) >= 0 {
+			parts = append(parts, s[start:i])
+			start = i + 1
+		}
+	}
+	return append(parts, s[start:])
 }
 
 // dotFormat is %{i} (RFC 7208 §7.3): the dotted quad for IPv4 and, for
@@ -243,8 +290,10 @@ func lowerASCII(c byte) byte {
 	return c
 }
 
+// getValidatedDomain is %{p} (RFC 7208 §7.3): of the PTR names of the
+// client that validate (§5.5), <domain> itself, else a subdomain of it, else
+// the first; "unknown" when none does.
 func (m *macro) getValidatedDomain() string {
-	// RFC 7208 §5.5
 	ptr, err := m.resolver.LookupPTR(m.ctx, m.ip)
 	if err != nil || len(ptr) == 0 {
 		return "unknown"
@@ -255,28 +304,48 @@ func (m *macro) getValidatedDomain() string {
 		ptr = ptr[:maxMXPTRRecords]
 	}
 
-	for _, domain := range ptr {
+	var validated []string
+	for _, name := range ptr {
 		// Verify PTR record with forward lookup matching IP version
 		var ips []net.IP
 		var err error
 		if m.ip.To4() != nil {
-			ips, err = m.resolver.LookupA(m.ctx, domain)
+			ips, err = m.resolver.LookupA(m.ctx, name)
 		} else {
-			ips, err = m.resolver.LookupAAAA(m.ctx, domain)
+			ips, err = m.resolver.LookupAAAA(m.ctx, name)
 		}
-
 		if err != nil {
 			continue
 		}
-
 		for _, ip := range ips {
 			if ip.Equal(m.ip) {
-				return domain
+				validated = append(validated, name)
+				break
 			}
 		}
 	}
+	if len(validated) == 0 {
+		return "unknown"
+	}
 
-	return "unknown"
+	domain := comparableName(m.domain)
+	for _, name := range validated {
+		if comparableName(name) == domain {
+			return name
+		}
+	}
+	for _, name := range validated {
+		if strings.HasSuffix(comparableName(name), "."+domain) {
+			return name
+		}
+	}
+	return validated[0]
+}
+
+// comparableName is name in the form two names compare equal in: lowercase,
+// without the trailing dot.
+func comparableName(name string) string {
+	return strings.ToLower(strings.TrimSuffix(name, "."))
 }
 
 // senderParts splits the sender into the local part (%{l}) and domain (%{o}).

@@ -119,7 +119,7 @@ Supported mechanisms: `all`, `include`, `a`, `mx`, `ptr`, `ip4`, `ip6`, `exists`
 
 Supported modifiers: `redirect=`, `exp=`
 
-Supported macro letters: `s`, `l`, `o`, `d`, `i`, `p`, `v`, `h` with digit, `r` (reverse), and delimiter transformers; `c`, `r` and `t` in explanation text only (`%{r}` is `unknown`, since the receiving host's name is not passed in). For an IPv6 client `%{i}` is the dot-separated nibbles (`%{ir}` gives the `ip6.arpa` order) and `%{c}` the colon form. Uppercase letters expand like lowercase ones and are then URL-escaped (RFC 3986 unreserved characters kept). An expanded name over 253 octets loses labels from the left until it fits (RFC 7208 §7.3).
+Supported macro letters: `s`, `l`, `o`, `d`, `i`, `p`, `v`, `h` with digit, `r` (reverse), and delimiter transformers; `c`, `r` and `t` in explanation text only (`%{r}` is `unknown`, since the receiving host's name is not passed in). For an IPv6 client `%{i}` is the dot-separated nibbles (`%{ir}` gives the `ip6.arpa` order) and `%{c}` the colon form. Uppercase letters expand like lowercase ones and are then URL-escaped (RFC 3986 unreserved characters kept). An expanded name over 253 octets loses labels from the left until it fits (RFC 7208 §7.3). Splitting keeps empty parts, and `%{p}` prefers `<domain>`, then a subdomain of it, among the validated names. A macro that is not well formed (an unknown letter, `c`/`r`/`t` outside explanation text, a zero DIGIT, a `%` not followed by `{`, `%`, `_` or `-`, an unclosed `%{`) in any domain-spec of a record, `exp=` included, makes the record a PermError before anything is evaluated (RFC 7208 §4.6); in explanation text it drops the explanation (§6.2).
 
 Enforced limits per RFC §4.6.4:
 - 10 DNS-querying mechanisms per evaluation

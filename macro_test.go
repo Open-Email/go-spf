@@ -91,7 +91,7 @@ func rfcPTRResolver() *mockResolver {
 
 // TestMacroRFC7208Examples expands every RFC 7208 §7.4 example for the IPv4
 // and the IPv6 client. The letters allowed only in explanation text (c, r,
-// t, RFC 7208 §7.2) do not expand in a domain-spec.
+// t, RFC 7208 §7.2) are a syntax error in a domain-spec (Open-Email/smtp-in#134).
 func TestMacroRFC7208Examples(t *testing.T) {
 	orig := spf.DefaultResolver
 	defer func() { spf.DefaultResolver = orig }()
@@ -99,14 +99,14 @@ func TestMacroRFC7208Examples(t *testing.T) {
 
 	for _, client := range []string{rfcIPv4, rfcIPv6} {
 		ip := net.ParseIP(client)
-		rows := append(rfcMacroRows(client),
-			macroRow{"%{c}", ""},
-			macroRow{"%{r}", ""},
-			macroRow{"%{t}", ""},
-		)
-		for _, row := range rows {
+		for _, row := range rfcMacroRows(client) {
 			if got := spf.Macro(row.macro, ip, rfcDomain, rfcSender, "hello.server"); got != row.want {
 				t.Errorf("client %s: Macro(%q) = %q, want %q", client, row.macro, got, row.want)
+			}
+		}
+		for _, letter := range []string{"%{c}", "%{r}", "%{t}"} {
+			if _, res := spf.MacroResult(letter, ip, rfcDomain, rfcSender, "hello.server"); res != spf.PermError {
+				t.Errorf("client %s: %s in a domain-spec: got %s, want %s", client, letter, res, spf.PermError)
 			}
 		}
 	}
@@ -138,8 +138,8 @@ func TestMacroUppercaseRFC7208Examples(t *testing.T) {
 			t.Errorf("client %s: Macro(%%{H}) = %q, want %q", client, got, "hello.server")
 		}
 		for _, letter := range []string{"%{C}", "%{R}", "%{T}"} {
-			if got := spf.Macro(letter, ip, rfcDomain, rfcSender, "hello.server"); got != "" {
-				t.Errorf("client %s: Macro(%q) in a domain-spec = %q, want it unexpanded", client, letter, got)
+			if _, res := spf.MacroResult(letter, ip, rfcDomain, rfcSender, "hello.server"); res != spf.PermError {
+				t.Errorf("client %s: %s in a domain-spec: got %s, want %s", client, letter, res, spf.PermError)
 			}
 		}
 	}
@@ -309,8 +309,7 @@ func TestExplanationMacros(t *testing.T) {
 		}
 	})
 
-	// RFC 7208 §7.2: the same letters in a domain-spec are not expanded
-	// (here they leave an empty label: the record's own error).
+	// RFC 7208 §7.2: the same letters in a domain-spec are a syntax error.
 	t.Run("not in a domain-spec", func(t *testing.T) {
 		for _, client := range []string{rfcIPv4, rfcIPv6} {
 			for _, record := range []string{
