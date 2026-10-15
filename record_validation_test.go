@@ -15,7 +15,7 @@ func TestMalformedRecordAnywhere(t *testing.T) {
 		"ip4:1.2.3.4/032", "ip4:2001:db8::1", "ip4:", "ip4:1.2.3.4/+24",
 		"ip6:::1/129", "ip6:::1//33", "ip6::CAFE::BABE", "ip6:192.0.2.1", "ip6:",
 		"a:foo-bar", "mx:111.222.33.44", "exists:museum", "a:foo.-com", "a:foo.c0m!",
-		"exists:bad+label.example.com", "exists:bad+label.%{d}", "a:foo:bar/baz.example.com",
+		"exists:bad+label.example.com", "exists:bad+label.%{d}", "exists:bad+%{l}.example.com", "a:foo:bar/baz.example.com",
 		"a:mail.example...com", "exp=bad+label.example.com",
 		"redirect=", "redirect=-all", "exp=", "exp=-all", "foo=%abc", "foo=%{z}",
 		"a:ctrl.example.com\rptr", "ip4:192.0.2.3\n", "foo=nonascii\u00e9",
