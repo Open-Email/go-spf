@@ -56,12 +56,48 @@ func (c check) expand(m string, ip net.IP, domain, sender, helo string, explain 
 	return expanded, None
 }
 
-// validDomainSpec checks macro-string domain-end (RFC 7208 section 7.1)
-// without expansion or DNS lookups. A domain-end is a final macro expansion,
-// or a dot and a toplabel, optionally followed by a root dot.
+// validDomainSpec checks macro-string domain-end (RFC 7208 section 7.1),
+// literal DNS characters and empty labels without expanding sender macros
+// or making DNS lookups. A domain-end is a final macro expansion, or a dot
+// and a toplabel, optionally followed by a root dot. Length and IDNA checks
+// that depend on expansion or truncation remain in domainSpec.
 func validDomainSpec(spec string) bool {
-	_, ok, endsInMacro := scanMacroStringEnd(spec, false, func(macroExpr) string { return "" })
+	// NUL cannot occur in a literal macro-string, so it marks unknown
+	// expansion data without assuming its length or its IDNA spelling.
+	recordLabels, ok, endsInMacro := scanMacroStringEnd(spec, false, func(macroExpr) string { return "\x00" })
 	if !ok || spec == "" {
+		return false
+	}
+	labels := strings.Split(recordLabels, ".")
+	hasMacro := strings.ContainsRune(recordLabels, 0)
+	for i, label := range labels {
+		if !hasMacro {
+			break
+		}
+		if label == "" {
+			if i != len(labels)-1 {
+				return false
+			}
+			continue // optional root dot
+		}
+		for _, c := range label {
+			if c != 0 && !(c == '_' || c == '-' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9') {
+				return false
+			}
+		}
+		if strings.ContainsRune(label, 0) {
+			// Literal characters must still be expressible in a DNS label.
+			// Length, hyphen positions and Punycode validity in a mixed
+			// label depend on the expansion, so check those at lookup time.
+			labels[i] = "x"
+		} else if _, err := canonicalLabel(label); err != nil {
+			// Expansion elsewhere can cause this literal label to be
+			// truncated away (section 7.3). Keep lookup-time validation
+			// for the case where it remains in the expanded name.
+			labels[i] = "x"
+		}
+	}
+	if _, err := queryName(strings.Join(labels, ".")); err != nil {
 		return false
 	}
 	if endsInMacro {
@@ -90,9 +126,9 @@ func validDomainSpec(spec string) bool {
 	return hasLetterOrHyphen
 }
 
-// recordName is spec with each macro standing for one valid label, which is
-// what the record's own text spells once the sender's data is taken out. It
-// is only asked about a spec that expanded, so one that is well formed.
+// recordName substitutes a label for each macro to distinguish an invalid
+// literal label from sender-expanded unqueryable data after a lookup name
+// fails conversion. Successful expanded names never need this fallback.
 func recordName(spec string) string {
 	name, _ := scanMacroString(spec, false, func(macroExpr) string { return "x" })
 	return name
